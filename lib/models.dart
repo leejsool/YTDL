@@ -57,7 +57,9 @@ class MediaInfo {
     this.formats = const [],
     this.storyboard,
     this.previewAudioUrl,
-  });
+    this.rawJson,
+    DateTime? fetchedAt,
+  }) : fetchedAt = fetchedAt ?? DateTime.now();
 
   final String id;
   final String title;
@@ -73,10 +75,29 @@ class MediaInfo {
   /// 구간 미리듣기용 소리 전용 스트림 주소(없으면 미리듣기를 숨긴다). 몇 시간 뒤에는 만료된다.
   final String? previewAudioUrl;
 
-  factory MediaInfo.fromJson(Map<String, dynamic> j, String url) {
+  /// yt-dlp 가 준 JSON 원문과 받은 시각. 다운로드할 때 yt-dlp 가 같은 분석을 처음부터 다시 하지 않도록
+  /// 이걸 넘겨 준다(`--load-info-json`, 다운로드 한 번에 약 3초 절약).
+  final String? rawJson;
+  final DateTime fetchedAt;
+
+  /// 스트림 주소는 몇 시간 뒤 만료된다. 넉넉히 2시간 안일 때만 다시 쓴다.
+  static const _reuseWindow = Duration(hours: 2);
+
+  /// 다운로드에 다시 쓸 수 있는 JSON. 없거나 오래됐으면 null(그러면 yt-dlp 가 새로 분석한다).
+  String? get reusableJson =>
+      rawJson != null && DateTime.now().difference(fetchedAt) < _reuseWindow
+      ? rawJson
+      : null;
+
+  factory MediaInfo.fromJson(
+    Map<String, dynamic> j,
+    String url, {
+    String? raw,
+  }) {
     final rawFormats = j['formats'] as List?;
     final duration = (j['duration'] as num?)?.round() ?? 0;
     return MediaInfo(
+      rawJson: raw,
       storyboard: Storyboard.fromFormats(rawFormats, duration),
       previewAudioUrl: pickPreviewAudioUrl(rawFormats, j['requested_formats'] as List?),
       id: (j['id'] ?? '').toString(),
@@ -143,9 +164,13 @@ class DownloadOptions {
     this.trimStart,
     this.trimEnd,
     this.gain = const AudioGain.none(),
+    this.infoJson,
   });
 
   final MediaKind kind;
+
+  /// 조회 때 받아 둔 yt-dlp JSON. 있으면 분석을 건너뛰고 바로 받는다(실패하면 백엔드가 새로 분석해서 다시 시도).
+  final String? infoJson;
 
   /// 음원일 때만 쓴다(영상은 무시).
   final AudioGain gain;

@@ -85,6 +85,19 @@ abstract class Backend {
     });
   }
 
+  /// 미리듣기용으로 이미 받아 둔(또는 받는 중인) 전체 소리 파일. 없거나 받기에 실패했으면 null.
+  /// 자동 음량 분석이 같은 소리를 yt-dlp 로 다시 받지 않고 이 파일을 쓰게 하려고 둔다.
+  Future<String?> cachedFullAudio(String url) async {
+    final pending = _fullAudio[url];
+    if (pending == null) return null;
+    try {
+      final path = await pending;
+      return File(path).existsSync() ? path : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<String> _fetchFull(String url, String? audioUrl) async {
     if (audioUrl != null) {
       try {

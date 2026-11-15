@@ -93,7 +93,11 @@ class AndroidBackend extends Backend {
           (l) => l.trimLeft().startsWith('{'),
           orElse: () => throw Exception('영상 정보를 읽지 못했습니다.'),
         );
-    return MediaInfo.fromJson(jsonDecode(line) as Map<String, dynamic>, url);
+    return MediaInfo.fromJson(
+      jsonDecode(line) as Map<String, dynamic>,
+      url,
+      raw: line,
+    );
   }
 
   @override
@@ -105,6 +109,11 @@ class AndroidBackend extends Backend {
     double? endSec,
   }) async {
     if (token.cancelled) throw CancelledException();
+    // 구간 미리듣기용으로 이미 받아 둔 소리가 있으면 그걸로 잰다(다시 받지 않는다).
+    final cached = remote ? await cachedFullAudio(source) : null;
+    if (cached != null) {
+      return measureGain(cached, token, startSec: startSec, endSec: endSec);
+    }
     final id = 'gain${_seq++}';
     token.onCancel = () {
       unawaited(
@@ -143,6 +152,26 @@ class AndroidBackend extends Backend {
     void Function(DownloadProgress) onProgress,
     CancelToken token,
   ) async {
+    // 조회 때 받아 둔 정보를 쓰는 빠른 길이 실패하면(링크 만료 등) 주소로 처음부터 한 번 더 시도한다.
+    if (options.infoJson != null) {
+      try {
+        return await _downloadOnce(url, options, onProgress, token);
+      } on CancelledException {
+        rethrow;
+      } catch (_) {
+        if (token.cancelled) throw CancelledException();
+      }
+    }
+    return _downloadOnce(url, options, onProgress, token, useInfo: false);
+  }
+
+  Future<DownloadResult> _downloadOnce(
+    String url,
+    DownloadOptions options,
+    void Function(DownloadProgress) onProgress,
+    CancelToken token, {
+    bool useInfo = true,
+  }) async {
     final id = 'dl${_seq++}';
     final parser = ProgressParser();
     _listeners[id] = (line) {
@@ -156,6 +185,7 @@ class AndroidBackend extends Backend {
         'url': url,
         'args': buildDownloadArgs(options),
         'audio': options.kind == MediaKind.audio,
+        if (useInfo && options.infoJson != null) 'infoJson': options.infoJson,
         // 음량 조절이 있으면 받은 뒤 내장 ffmpeg 로 다시 인코딩(없으면 null).
         'gainArgs': options.kind == MediaKind.audio
             ? gainEncodeArgs(options.gain, options.audioFormat)

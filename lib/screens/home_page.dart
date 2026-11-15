@@ -287,6 +287,7 @@ class _HomePageState extends State<HomePage> {
         trimStart: trim ? _trimStart : null,
         trimEnd: trim ? _trimEnd : null,
         gain: _kind == MediaKind.audio ? _gain : const AudioGain.none(),
+        infoJson: info.reusableJson,
       );
       final r = await _b.download(info.url, options, (p) {
         if (mounted) setState(() => _progress = p);
@@ -1003,13 +1004,23 @@ class _HomePageState extends State<HomePage> {
                         trimmed ? _trimStart : null,
                         trimmed ? _trimEnd : null,
                       ),
-                      onAuto: (token) => _b.measureGain(
-                        info.url,
-                        token,
-                        remote: true,
-                        startSec: trimmed ? _trimStart.toDouble() : null,
-                        endSec: trimmed ? _trimEnd.toDouble() : null,
-                      ),
+                      onAuto: (token) async {
+                        // 소리를 한 번에 받아 두면(보통 1초 안팎) yt-dlp 로 다시 받는 것보다 분석이 훨씬 빠르다.
+                        // 너무 긴 영상은 전체를 받는 게 낭비라 기존 방식(필요한 구간만 yt-dlp 로)을 쓴다.
+                        if (info.durationSeconds <= 1800) {
+                          await _preview.prefetch(
+                            info.url,
+                            audioUrl: info.previewAudioUrl,
+                          );
+                        }
+                        return _b.measureGain(
+                          info.url,
+                          token,
+                          remote: true,
+                          startSec: trimmed ? _trimStart.toDouble() : null,
+                          endSec: trimmed ? _trimEnd.toDouble() : null,
+                        );
+                      },
                       onChanged: (g) => setState(() => _gain = g),
                     ),
                   ),

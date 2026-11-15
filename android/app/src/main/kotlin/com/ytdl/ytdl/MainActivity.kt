@@ -95,6 +95,8 @@ class MainActivity : FlutterActivity() {
                 req.addOption("--dump-single-json")
                 req.addOption("--no-playlist")
                 req.addOption("--no-warnings")
+                // HLS 목록은 쓰지 않는다(받아 오는 시간만 늘어난다).
+                req.addOption("--extractor-args", "youtube:skip=hls")
                 YoutubeDL.execute(req).out
             }
 
@@ -122,8 +124,19 @@ class MainActivity : FlutterActivity() {
                     deleteRecursively()
                     mkdirs()
                 }
+                var infoFile: File? = null
                 try {
-                    val req = YoutubeDLRequest(url)
+                    // 조회 때 받아 둔 JSON 이 있으면 분석을 건너뛴다(--load-info-json). 없으면 주소로 받는다.
+                    val infoJson = call.argument<String>("infoJson")
+                    val req = if (infoJson != null) {
+                        // 받은 파일을 찾을 때 섞이지 않게 임시 폴더 바깥에 둔다.
+                        val f = File(tmp.parentFile, "$id.info.json")
+                        infoFile = f
+                        f.writeText(infoJson, Charsets.UTF_8)
+                        YoutubeDLRequest(emptyList<String>()).apply {
+                            addOption("--load-info-json", f.absolutePath)
+                        }
+                    } else YoutubeDLRequest(url)
                     req.addOption("-P", tmp.absolutePath)
                     req.addCommands(args)
                     val resp = YoutubeDL.execute(req, processId = id, callback = { _, _, line ->
@@ -157,6 +170,7 @@ class MainActivity : FlutterActivity() {
                     publish(finalFile, audio)
                 } finally {
                     tmp.deleteRecursively()
+                    infoFile?.delete()
                 }
             }
 
