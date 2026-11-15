@@ -265,6 +265,32 @@ class DesktopBackend extends Backend {
   }
 
   @override
+  Future<PlaylistInfo> fetchPlaylist(String url, {int limit = 200}) async {
+    await _engineReady();
+    final r = await Process.run(
+      _ytdlp,
+      [
+        ..._common,
+        '--flat-playlist',
+        '--yes-playlist',
+        '--playlist-end',
+        '$limit',
+        '--extractor-args',
+        'youtube:skip=hls',
+        '--dump-single-json',
+        url,
+      ],
+      environment: _env,
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
+    if (r.exitCode != 0) {
+      throw Exception(_summarize((r.stderr as String).split('\n')));
+    }
+    return PlaylistInfo.fromJson(await decodeJsonOffThread(r.stdout as String), url);
+  }
+
+  @override
   Future<double> measureGain(
     String source,
     CancelToken token, {

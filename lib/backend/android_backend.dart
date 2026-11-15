@@ -101,6 +101,22 @@ class AndroidBackend extends Backend {
   }
 
   @override
+  Future<PlaylistInfo> fetchPlaylist(String url, {int limit = 200}) async {
+    final json = await _method.invokeMethod<String>('getInfo', {
+      'url': url,
+      'playlist': true,
+      'limit': limit,
+    });
+    final line = (json ?? '')
+        .split('\n')
+        .lastWhere(
+          (l) => l.trimLeft().startsWith('{'),
+          orElse: () => throw Exception('재생목록을 읽지 못했습니다.'),
+        );
+    return PlaylistInfo.fromJson(await decodeJsonOffThread(line), url);
+  }
+
+  @override
   Future<double> measureGain(
     String source,
     CancelToken token, {

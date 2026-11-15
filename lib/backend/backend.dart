@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import '../models.dart';
 import 'ytdlp_args.dart';
@@ -6,6 +8,10 @@ import 'android_backend.dart';
 import 'desktop_backend.dart';
 
 typedef SetupCallback = void Function(String message, double? progress);
+
+/// 큰 JSON(재생목록은 수백 KB)을 화면 스레드를 막지 않게 따로 읽는다.
+Future<Map<String, dynamic>> decodeJsonOffThread(String raw) =>
+    Isolate.run(() => jsonDecode(raw) as Map<String, dynamic>);
 
 /// 플랫폼별 다운로드 엔진 인터페이스.
 /// - Windows : yt-dlp.exe + ffmpeg.exe 를 직접 실행
@@ -15,6 +21,11 @@ abstract class Backend {
   Future<void> prepare(SetupCallback onStatus);
 
   Future<MediaInfo> fetchInfo(String url);
+
+  /// 재생목록 주소의 영상 목록을 읽는다(영상마다 자세한 분석은 하지 않아 수 초 안에 끝난다).
+  /// 너무 길면 앞의 [limit] 개만 읽는다.
+  Future<PlaylistInfo> fetchPlaylist(String url, {int limit = 200}) =>
+      throw UnimplementedError();
 
   /// 원본 음량을 측정하고 목표 음량까지 필요한 dB를 반환한다.
   Future<double> measureGain(

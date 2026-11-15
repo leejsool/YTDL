@@ -68,7 +68,7 @@ void main() {
     handle.dispose();
   });
 
-  testWidgets('시맨틱을 켠 채 탭 4개를 오가기', (tester) async {
+  testWidgets('시맨틱을 켠 채 탭 5개를 오가기', (tester) async {
     final handle = tester.ensureSemantics();
     SharedPreferences.setMockInitialValues({});
     tester.view.devicePixelRatio = 1;
@@ -77,7 +77,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(YtdlApp(backend: _FakeBackend()));
     await tester.pumpAndSettle();
-    for (final label in ['음원 편집', '영상 편집', '옵션', '다운로드', '옵션', '음원 편집', '다운로드']) {
+    for (final label in ['대기열', '음원 편집', '영상 편집', '옵션', '다운로드', '대기열', '옵션', '음원 편집', '다운로드']) {
       await tester.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text(label)));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull, reason: label);

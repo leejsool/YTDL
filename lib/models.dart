@@ -114,6 +114,89 @@ class MediaInfo {
   }
 }
 
+/// 재생목록 안의 영상 하나(목록에서 읽은 가벼운 정보). 길이를 모를 수도 있다.
+class PlaylistEntry {
+  const PlaylistEntry({
+    required this.id,
+    required this.title,
+    required this.url,
+    this.uploader = '',
+    this.durationSeconds,
+    this.thumbnail,
+  });
+
+  final String id;
+  final String title;
+  final String url;
+  final String uploader;
+  final int? durationSeconds;
+  final String? thumbnail;
+}
+
+class PlaylistInfo {
+  const PlaylistInfo({
+    required this.title,
+    required this.uploader,
+    required this.url,
+    required this.entries,
+    this.totalCount,
+    this.skipped = 0,
+  });
+
+  final String title;
+  final String uploader;
+  final String url;
+  final List<PlaylistEntry> entries;
+
+  /// 재생목록에 들어 있는 영상 수(유튜브가 알려 준 값). 앞부분만 읽었으면 [entries] 보다 크다.
+  final int? totalCount;
+
+  /// 비공개·삭제돼서 건너뛴 항목 수.
+  final int skipped;
+
+  bool get truncated => totalCount != null && totalCount! > entries.length + skipped;
+
+  /// `yt-dlp --flat-playlist --dump-single-json` 결과를 읽는다.
+  factory PlaylistInfo.fromJson(Map<String, dynamic> j, String url) {
+    final entries = <PlaylistEntry>[];
+    var skipped = 0;
+    for (final e in (j['entries'] as List? ?? const [])) {
+      if (e is! Map<String, dynamic>) continue;
+      final id = (e['id'] ?? '').toString();
+      final title = (e['title'] ?? '').toString();
+      // 비공개·삭제된 영상은 제목이 "[Private video]" 처럼 오고 받을 수도 없다.
+      if (id.isEmpty || title == '[Private video]' || title == '[Deleted video]') {
+        skipped++;
+        continue;
+      }
+      final rawUrl = (e['url'] ?? '').toString();
+      String? thumb;
+      final thumbs = e['thumbnails'];
+      if (thumbs is List && thumbs.isNotEmpty && thumbs.last is Map) {
+        thumb = (thumbs.last as Map)['url'] as String?;
+      }
+      entries.add(
+        PlaylistEntry(
+          id: id,
+          title: title.isEmpty ? id : title,
+          url: rawUrl.startsWith('http') ? rawUrl : 'https://www.youtube.com/watch?v=$id',
+          uploader: (e['uploader'] ?? e['channel'] ?? '').toString(),
+          durationSeconds: (e['duration'] as num?)?.round(),
+          thumbnail: thumb ?? 'https://i.ytimg.com/vi/$id/mqdefault.jpg',
+        ),
+      );
+    }
+    return PlaylistInfo(
+      title: (j['title'] ?? '(제목 없음)').toString(),
+      uploader: (j['uploader'] ?? j['channel'] ?? '').toString(),
+      url: url,
+      entries: entries,
+      totalCount: (j['playlist_count'] as num?)?.round(),
+      skipped: skipped,
+    );
+  }
+}
+
 enum GainMode { none, manual, auto }
 
 /// 음량 조절. 소리가 작은 음원을 키우는 데 주로 쓴다.
@@ -186,6 +269,17 @@ class DownloadOptions {
   final int? trimEnd;
 
   bool get hasTrim => trimStart != null && trimEnd != null;
+
+  /// 같은 옵션에 [infoJson] 만 바꾼 복사본.
+  DownloadOptions withInfoJson(String? json) => DownloadOptions(
+    kind: kind,
+    audioFormat: audioFormat,
+    maxHeight: maxHeight,
+    trimStart: trimStart,
+    trimEnd: trimEnd,
+    gain: gain,
+    infoJson: json,
+  );
 }
 
 class DownloadProgress {

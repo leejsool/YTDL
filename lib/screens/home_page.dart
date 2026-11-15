@@ -9,12 +9,14 @@ import '../util/names.dart';
 import '../util/oembed.dart';
 import '../util/preview_renderer.dart';
 import '../state/app_state.dart';
+import '../state/download_queue.dart';
 import '../state/settings.dart';
 import '../util/size_estimate.dart';
 import '../util/time_format.dart';
 import '../util/youtube_url.dart';
 import '../widgets/gain_selector.dart';
 import '../widgets/loading_stripes.dart';
+import '../widgets/playlist_panel.dart';
 import '../widgets/range_preview.dart';
 import '../widgets/trim_selector.dart';
 import '../widgets/pill_button.dart';
@@ -28,9 +30,17 @@ class HomePage extends StatefulWidget {
     required this.videoController,
     required this.videoRecent,
     required this.settings,
+    required this.queue,
+    this.onOpenQueue,
   });
 
   final Backend backend;
+
+  /// 대기열에 담으면 여기서 순서대로 받는다.
+  final DownloadQueue queue;
+
+  /// "대기열 보기" 를 누르면 대기열 탭으로 이동한다.
+  final VoidCallback? onOpenQueue;
 
   /// 받은 음원을 최근 목록에 올리고, "편집하기"로 편집 탭에 넘기는 데 쓴다.
   final RecentStore recent;
@@ -67,6 +77,12 @@ class _HomePageState extends State<HomePage> {
   MediaInfo? _quick;
   final Map<String, (MediaInfo, DateTime)> _infoCache = {};
   String? _fetchError;
+
+  // 재생목록
+  PlaylistInfo? _playlist;
+
+  /// 지금 보는 영상이 들어 있는 재생목록 ID(있으면 "재생목록 보기" 를 권한다).
+  String? _hintListId;
 
   // 옵션
   MediaKind _kind = MediaKind.audio;
@@ -168,6 +184,7 @@ class _HomePageState extends State<HomePage> {
   /// 주소칸을 비운다. 조회 중이었다면 그 조회도 멈추고 임시로 보이던 카드를 치운다.
   void _clearUrl() {
     _urlCtl.clear();
+    if (_playlist != null) setState(() => _playlist = null);
     if (_fetching) {
       _fetchGen++;
       setState(() {
@@ -197,10 +214,17 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     FocusManager.instance.primaryFocus?.unfocus();
+    // 재생목록 주소는 영상 목록만 읽어서 고르는 화면을 보여 준다.
+    if (isPlaylistOnlyUrl(url)) {
+      await _fetchPlaylist(url, gen);
+      return;
+    }
     // 최근 30분 안에 조회한 영상이면 바로 보여 준다(소리 주소는 몇 시간 동안 유효).
     final cached = _infoCache[url];
     if (cached != null && DateTime.now().difference(cached.$2).inMinutes < 30) {
       setState(() {
+        _playlist = null;
+        _hintListId = playlistIdOf(url);
         _fetchError = null;
         _result = null;
         _dlError = null;
@@ -217,6 +241,8 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     setState(() {
+      _playlist = null;
+      _hintListId = playlistIdOf(url);
       _fetching = true;
       _fetchUrl = url;
       _trimOn = false;
@@ -263,6 +289,88 @@ class _HomePageState extends State<HomePage> {
         });
       }
     }
+  }
+
+  /// 재생목록의 영상 목록을 읽어 고르는 화면을 띄운다.
+  Future<void> _fetchPlaylist(String url, int gen) async {
+    setState(() {
+      _fetching = true;
+      _fetchUrl = url;
+      _fetchError = null;
+      _quick = null;
+      _info = null;
+      _playlist = null;
+      _hintListId = null;
+      _result = null;
+      _dlError = null;
+      _saved = null;
+      _savedVideo = null;
+    });
+    try {
+      final p = await _b.fetchPlaylist(url);
+      if (!mounted || gen != _fetchGen) return;
+      setState(() {
+        if (p.entries.isEmpty) {
+          _fetchError = '받을 수 있는 영상이 없는 재생목록이에요.';
+        } else {
+          _playlist = p;
+        }
+      });
+    } catch (e) {
+      if (mounted && gen == _fetchGen) setState(() => _fetchError = _msg(e));
+    } finally {
+      if (mounted && gen == _fetchGen) setState(() => _fetching = false);
+    }
+  }
+
+  void _openQueueAction() => widget.onOpenQueue?.call();
+
+  void _showQueued(int count) {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          // 버튼이 달린 안내는 기본으로 안 사라지므로 직접 정한다.
+          persist: false,
+          duration: const Duration(seconds: 5),
+          content: Text(
+            '대기열에 $count개를 담았어요 (남은 ${widget.queue.activeCount}개)',
+          ),
+          action: widget.onOpenQueue == null
+              ? null
+              : SnackBarAction(label: '대기열 보기', onPressed: _openQueueAction),
+        ),
+      );
+  }
+
+  /// 지금 조회한 영상을 고른 옵션 그대로 대기열에 담는다.
+  void _enqueueCurrent() {
+    final info = _info;
+    if (info == null) return;
+    final trim = _trimOn && info.durationSeconds > 0;
+    widget.queue.add(
+      url: info.url,
+      title: info.title,
+      uploader: info.uploader,
+      thumbnail: info.thumbnail,
+      durationSeconds: info.durationSeconds,
+      info: info,
+      options: DownloadOptions(
+        kind: _kind,
+        audioFormat: _audioFormat,
+        maxHeight: _maxHeight,
+        trimStart: trim ? _trimStart : null,
+        trimEnd: trim ? _trimEnd : null,
+        gain: _kind == MediaKind.audio ? _gain : const AudioGain.none(),
+      ),
+    );
+    _showQueued(1);
+  }
+
+  void _enqueuePlaylist(List<PlaylistEntry> entries, DownloadOptions options) {
+    widget.queue.addPlaylistEntries(entries, options);
+    _showQueued(entries.length);
   }
 
   Future<void> _download() async {
@@ -483,7 +591,8 @@ class _HomePageState extends State<HomePage> {
   Widget _buildMain(bool wide) {
     final info = _info;
     // 조회 중에도 화면 구성을 미리 보여 준다(흐리게, 누를 수 없게). 아직 모르는 값은 ?? 로 표시한다.
-    final loading = info == null && _fetching;
+    final loading =
+        info == null && _fetching && !isPlaylistOnlyUrl(_fetchUrl);
     final shown =
         info ??
         (loading
@@ -506,6 +615,34 @@ class _HomePageState extends State<HomePage> {
             padding: EdgeInsets.only(top: 16),
             child: LinearProgressIndicator(),
           ),
+        if (_playlist != null) ...[
+          const SizedBox(height: 16),
+          PlaylistPanel(
+            // 다른 재생목록을 조회하면 선택 상태도 새로 만든다.
+            key: ValueKey(_playlist!.url),
+            playlist: _playlist!,
+            settings: widget.settings,
+            onAdd: _enqueuePlaylist,
+          ),
+        ],
+        // 이 영상이 재생목록 안에서 열렸다면 목록 전체를 받을 수 있다고 알려 준다.
+        if (info != null && _hintListId != null && _playlist == null)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: TextButton.icon(
+                onPressed: _downloading
+                    ? null
+                    : () {
+                        _urlCtl.text = playlistUrlFor(_hintListId!);
+                        _fetch();
+                      },
+                icon: const Icon(Icons.queue_music, size: 18),
+                label: const Text('이 영상이 들어 있는 재생목록 전체 보기'),
+              ),
+            ),
+          ),
         if (shown != null) ...[
           const SizedBox(height: 16),
           if (wide)
@@ -526,7 +663,7 @@ class _HomePageState extends State<HomePage> {
             _buildOptions(shown, loading: loading),
           ],
         ],
-        if (info == null && !_fetching)
+        if (info == null && !_fetching && _playlist == null)
           Padding(
             padding: const EdgeInsets.only(top: 18),
             child: _buildEmpty(),
@@ -1192,7 +1329,17 @@ class _HomePageState extends State<HomePage> {
             : '다운로드',
       ),
     );
-    final loading = info == null && _fetching;
+    final loading =
+        info == null && _fetching && !isPlaylistOnlyUrl(_fetchUrl);
+    final playlistMode = _playlist != null;
+    final queueButton = PillButton(
+      onPressed: info == null || _downloading || _fetching
+          ? null
+          : _enqueueCurrent,
+      tooltip: '대기열에 담기',
+      icon: const Icon(Icons.playlist_add, size: 20),
+      label: wide ? const Text('대기열에 담기') : null,
+    );
     final summary = (info == null && !loading)
         ? null
         : Column(
@@ -1251,8 +1398,13 @@ class _HomePageState extends State<HomePage> {
                           const SizedBox(width: 12),
                           Flexible(child: summary),
                         ],
-                        const SizedBox(width: 12),
-                        button,
+                        // 재생목록 화면에서는 담기 버튼이 목록 카드 안에 있다.
+                        if (!playlistMode) ...[
+                          const SizedBox(width: 12),
+                          queueButton,
+                          const SizedBox(width: 8),
+                          button,
+                        ],
                       ],
                     )
                   else
@@ -1261,13 +1413,17 @@ class _HomePageState extends State<HomePage> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         _buildSaveLocation(),
-                        const SizedBox(height: 8),
-                        if (summary == null)
+                        if (!playlistMode) const SizedBox(height: 8),
+                        if (playlistMode)
+                          const SizedBox.shrink()
+                        else if (summary == null)
                           button
                         else
                           Row(
                             children: [
                               Expanded(child: summary),
+                              const SizedBox(width: 8),
+                              queueButton,
                               const SizedBox(width: 8),
                               button,
                             ],

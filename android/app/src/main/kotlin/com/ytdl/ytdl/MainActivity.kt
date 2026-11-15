@@ -93,7 +93,14 @@ class MainActivity : FlutterActivity() {
                 ensureInit()
                 val req = YoutubeDLRequest(call.argument<String>("url")!!)
                 req.addOption("--dump-single-json")
-                req.addOption("--no-playlist")
+                if (call.argument<Boolean>("playlist") == true) {
+                    // 재생목록: 영상마다 분석하지 않고 목록만 읽는다.
+                    req.addOption("--flat-playlist")
+                    req.addOption("--yes-playlist")
+                    req.addOption("--playlist-end", (call.argument<Number>("limit")?.toInt() ?: 200).toString())
+                } else {
+                    req.addOption("--no-playlist")
+                }
                 req.addOption("--no-warnings")
                 // HLS 목록은 쓰지 않는다(받아 오는 시간만 늘어난다).
                 req.addOption("--extractor-args", "youtube:skip=hls")
