@@ -7,6 +7,7 @@ import '../backend/backend.dart';
 import '../models.dart';
 import '../util/names.dart';
 import '../util/time_format.dart';
+import 'gain_selector.dart';
 
 /// 받은 음원을 앱 안에서 들어 보고, 원본 영상 기준 어디서 어디까지인지 확인하고,
 /// 더 자를 구간을 골라 새 파일로 저장하는 카드.
@@ -59,6 +60,7 @@ class _AudioEditorState extends State<AudioEditor> {
 
   bool _saving = false;
   String? _saveError;
+  AudioGain _gain = const AudioGain.none();
 
   SavedAudio get _a => widget.audio;
 
@@ -226,18 +228,25 @@ class _AudioEditorState extends State<AudioEditor> {
 
   bool get _isFull => _selStart <= 0 && _selEnd >= _durMs - 20;
 
+  /// 구간을 안 자르고 음량만 바꿔 저장하는 경우인지.
+  bool get _gainOnly => _isFull && _gain.isActive;
+
   Future<void> _save() async {
-    if (_saving || _isFull) return;
+    if (_saving || (_isFull && !_gain.isActive)) return;
     final startSrc = _a.srcStart + _selStart / 1000;
     final endSrc = _a.srcStart + _selEnd / 1000;
-    final name = '${_a.title}${cutSuffix(startSrc, endSrc)}';
+    // 원본 영상 기준 구간 표시는 다시 열었을 때 구간을 이어받는 데 쓰이므로, 원본과의 대응이 있는 파일은
+    // 전체를 저장할 때도 붙인다. 아무 정보 없는 일반 파일을 음량만 바꿀 때는 붙이지 않는다.
+    final withCut = !_isFull || _a.sourceLabel != null;
+    final name = '${_a.title}${_gain.nameTag}${withCut ? cutSuffix(startSrc, endSrc) : ''}';
     setState(() {
       _saving = true;
       _saveError = null;
     });
     await _player.pause();
     try {
-      final r = await widget.backend.trimAudio(_a.path, _selStart / 1000, _selEnd / 1000, name);
+      final r = await widget.backend
+          .trimAudio(_a.path, _selStart / 1000, _selEnd / 1000, name, gain: _gain);
       if (!mounted) return;
       final path = r.filePath;
       if (path == null) throw Exception('저장된 파일 경로를 알 수 없습니다.');
@@ -415,18 +424,47 @@ class _AudioEditorState extends State<AudioEditor> {
         '${_a.sourceLabel == null ? '' : '\n→ ${_a.sourceLabel} ${_src(srcStart)} ~ ${_src(srcEnd)}'}',
         style: theme.textTheme.bodyMedium,
       ),
+      const Divider(height: 28),
+
+      // 음량 조절
+      Text('음량 조절', style: theme.textTheme.titleSmall),
+      const SizedBox(height: 4),
+      GainSelector(
+        value: _gain,
+        enabled: !_saving,
+        onChanged: (g) => setState(() {
+          _gain = g;
+          _saveError = null;
+        }),
+      ),
+      const SizedBox(height: 4),
+      Text(
+        '미리듣기는 파일 그대로의 소리예요. 음량은 저장한 새 파일을 열어서 확인해 보세요(원본은 그대로 남아요).',
+        style: small,
+      ),
       const SizedBox(height: 12),
       FilledButton.icon(
-        onPressed: (_saving || _isFull) ? null : _save,
+        onPressed: (_saving || (_isFull && !_gain.isActive)) ? null : _save,
         icon: _saving
             ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-            : const Icon(Icons.content_cut),
-        label: Text(_isFull ? '자를 구간을 먼저 골라 주세요' : '선택 구간만 새 파일로 저장'),
+            : Icon(_gainOnly || (!_isFull && _gain.isActive) ? Icons.volume_up : Icons.content_cut),
+        label: Text(
+          _saving
+              ? (_gain.isActive ? '음량 조절하며 저장하는 중…' : '저장하는 중…')
+              : _isFull
+                  ? (_gain.isActive ? '음량을 바꿔 새 파일로 저장' : '자를 구간을 먼저 골라 주세요')
+                  : (_gain.isActive ? '선택 구간을 음량 바꿔 새 파일로 저장' : '선택 구간만 새 파일로 저장'),
+        ),
       ),
-      if (!_isFull)
+      if (!_isFull || _gain.isActive)
         Padding(
           padding: const EdgeInsets.only(top: 4),
-          child: Text('지금 파일은 그대로 두고, 잘라낸 부분을 새 파일로 저장해요.', style: small),
+          child: Text(
+            _gainOnly
+                ? '지금 파일은 그대로 두고, 음량을 바꾼 파일을 새로 저장해요.'
+                : '지금 파일은 그대로 두고, 잘라낸 부분을 새 파일로 저장해요.',
+            style: small,
+          ),
         ),
       if (_saveError != null)
         Padding(

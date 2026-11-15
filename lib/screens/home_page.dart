@@ -7,6 +7,7 @@ import '../util/names.dart';
 import '../state/app_state.dart';
 import '../util/size_estimate.dart';
 import '../util/time_format.dart';
+import '../widgets/gain_selector.dart';
 import '../widgets/trim_selector.dart';
 
 class HomePage extends StatefulWidget {
@@ -45,6 +46,7 @@ class _HomePageState extends State<HomePage> {
   // 옵션
   MediaKind _kind = MediaKind.audio;
   String _audioFormat = 'mp3';
+  AudioGain _gain = const AudioGain.none();
   int? _maxHeight = 1080;
   bool _trimOn = false;
   int _trimStart = 0;
@@ -166,6 +168,7 @@ class _HomePageState extends State<HomePage> {
         maxHeight: _maxHeight,
         trimStart: trim ? _trimStart : null,
         trimEnd: trim ? _trimEnd : null,
+        gain: _kind == MediaKind.audio ? _gain : const AudioGain.none(),
       );
       final r = await _b.download(
         info.url,
@@ -433,6 +436,14 @@ class _HomePageState extends State<HomePage> {
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
+        if (_kind == MediaKind.audio) ...[
+          const SizedBox(height: 12),
+          GainSelector(
+            value: _gain,
+            enabled: !busy,
+            onChanged: (g) => setState(() => _gain = g),
+          ),
+        ],
         const SizedBox(height: 8),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,

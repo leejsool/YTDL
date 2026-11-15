@@ -6,6 +6,14 @@
 
 - 음원(MP3/M4A/OPUS) · 영상(MP4) 다운로드, 받기 전에 **구간만** 잘라서 저장
 - 화질·형식 버튼마다 **예상 용량** 표시(`lib/util/size_estimate.dart`; yt-dlp 가 실제로 고르는 포맷과 같은 규칙으로 계산, 구간을 켜면 비율만큼 줄여서 표시)
+- **음량 조절**(소리가 작은 음원용): 다운로드 탭(음원)과 편집 탭 둘 다에서 `그대로 / 직접 조절(-12~+20 dB) / 자동으로 키우기(-14 LUFS)` 선택
+  (`lib/widgets/gain_selector.dart`, 인자는 `lib/backend/gain_args.dart` 한 곳에서 만들어 Windows·Android 가 공유).
+  - 키울 때는 `alimiter` 로 최대치를 막아 찌그러지지(클리핑) 않게 한다.
+  - 음량을 바꾸면 **다시 인코딩**한다(`-c copy` 불가). 안 바꾸면 예전처럼 복사라 음질 손실이 없다.
+  - 다운로드 때는 yt-dlp 에 필터를 넘기지 않고 **받은 뒤 ffmpeg 로 따로 처리**한다. yt-dlp 는 이미 목표 형식(예: m4a→m4a)이면
+    변환 단계를 건너뛰어 `--postprocessor-args` 의 `-af` 가 조용히 무시되기 때문(직접 확인함).
+  - 파일 이름에 `(vol +6dB)` / `(vol auto)` 가 붙는다(`... (vol +6dB) (cut 0m05s-0m12s).mp3`). 편집 탭에서 구간을 안 자르고 음량만 바꿔 저장도 가능.
+  - 편집 탭 미리듣기는 파일 그대로의 소리다(플레이어 볼륨은 100%가 한계라 키운 소리를 미리 들을 수 없음). 저장한 새 파일을 열어 확인한다.
 - 아래쪽 탭이 두 개: **다운로드** / **편집**
 - **편집 탭**(`lib/screens/edit_page.dart`, `lib/widgets/audio_editor.dart`): 컴퓨터·폰에 있는 아무 음원(MP3, M4A, AAC, FLAC, WAV, OGG, OPUS, WMA)이나
   방금 받은 음원을 열어 듣고, 구간을 잘라 새 파일로 저장한다.
@@ -71,6 +79,17 @@ flutter test integration_test/windows_flow_test.dart -d windows
 .\tool\make_icon.ps1                 # assets\icon 에 원본 PNG 생성 (디자인은 이 스크립트 안)
 dart run flutter_launcher_icons      # Android / Windows 아이콘 적용
 ```
+
+## 음량 조절 자동 검증
+
+```powershell
+flutter test test/gain_test.dart                          # 인자·이름 + 실제 ffmpeg 로 +12dB/자동/클리핑 확인(네트워크 불필요)
+flutter test integration_test/gain_backend_test.dart      # 진짜 DesktopBackend 로 다운로드·자르기 + 음량(네트워크 필요, 창 안 띄움)
+```
+
+> `windows_flow_test.dart` 는 가끔 실패한다(원래 코드에서도 3번 중 1번 실패). 한 번 더 돌려 보고, 계속 실패하면 원인을 살필 것.
+> 한 번은 `audioplayers_windows_plugin.dll` 접근 위반으로 앱이 죽었다(편집 탭에서 두 번째 파일을 여는 단계).
+> Android 쪽(Kotlin + 내장 ffmpeg 의 `loudnorm`/`alimiter`/인코더)은 실기기에서 아직 확인하지 못했다.
 
 ## 재생 지연(첫 재생이 버벅이는지) 측정
 

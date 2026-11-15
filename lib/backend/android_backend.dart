@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../models.dart';
 import '../util/names.dart';
 import 'backend.dart';
+import 'gain_args.dart';
 import 'ytdlp_args.dart';
 
 class AndroidBackend extends Backend {
@@ -67,6 +68,10 @@ class AndroidBackend extends Backend {
         'url': url,
         'args': buildDownloadArgs(options),
         'audio': options.kind == MediaKind.audio,
+        // 음량 조절이 있으면 받은 뒤 내장 ffmpeg 로 다시 인코딩(없으면 null).
+        'gainArgs': options.kind == MediaKind.audio
+            ? gainEncodeArgs(options.gain, options.audioFormat)
+            : null,
       });
       return DownloadResult(location: r?['location'] ?? '', filePath: r?['path']);
     } on PlatformException catch (e) {
@@ -82,14 +87,18 @@ class AndroidBackend extends Backend {
     String srcPath,
     double startSec,
     double endSec,
-    String outBaseName,
-  ) async {
+    String outBaseName, {
+    AudioGain gain = const AudioGain.none(),
+  }) async {
     try {
+      final ext = extensionOf(srcPath);
       final r = await _method.invokeMapMethod<String, String>('trimAudio', {
         'src': srcPath,
         'startMs': (startSec * 1000).round(),
         'endMs': (endSec * 1000).round(),
-        'outName': '$outBaseName.${extensionOf(srcPath)}',
+        'outName': '$outBaseName.$ext',
+        // null 이면 그대로 복사(-c copy), 있으면 음량 조절하며 다시 인코딩.
+        'encodeArgs': gainEncodeArgs(gain, ext),
       });
       return DownloadResult(location: r?['location'] ?? '', filePath: r?['path']);
     } on PlatformException catch (e) {

@@ -79,6 +79,48 @@ class MediaInfo {
   }
 }
 
+enum GainMode { none, manual, auto }
+
+/// 음량 조절. 소리가 작은 음원을 키우는 데 주로 쓴다.
+/// 음량을 바꾸려면 소리를 다시 인코딩해야 하므로(복사 불가) 약간의 음질 변화와 시간이 든다.
+class AudioGain {
+  const AudioGain.none()
+      : mode = GainMode.none,
+        db = 0;
+
+  /// [db] 만큼 키운다(음수면 줄인다). 0 이면 조절 없음.
+  const AudioGain.manual(this.db) : mode = GainMode.manual;
+
+  /// 유튜브 표준 음량(-14 LUFS)에 맞춰 자동으로 키우거나 줄인다.
+  const AudioGain.auto()
+      : mode = GainMode.auto,
+        db = 0;
+
+  final GainMode mode;
+  final double db;
+
+  bool get isActive => switch (mode) {
+        GainMode.none => false,
+        GainMode.manual => db != 0,
+        GainMode.auto => true,
+      };
+
+  /// 파일 이름에 붙일 표시. " (vol +6dB)" / " (vol auto)" / 조절 없으면 "".
+  /// 원본 파일과 이름이 겹치지 않게 하고, 어떻게 만든 파일인지 알아보게 한다.
+  String get nameTag {
+    if (!isActive) return '';
+    if (mode == GainMode.auto) return ' (vol auto)';
+    return ' (vol ${db > 0 ? '+' : ''}${db.toStringAsFixed(0)}dB)';
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is AudioGain && other.mode == mode && other.db == db;
+
+  @override
+  int get hashCode => Object.hash(mode, db);
+}
+
 class DownloadOptions {
   const DownloadOptions({
     required this.kind,
@@ -86,9 +128,13 @@ class DownloadOptions {
     this.maxHeight,
     this.trimStart,
     this.trimEnd,
+    this.gain = const AudioGain.none(),
   });
 
   final MediaKind kind;
+
+  /// 음원일 때만 쓴다(영상은 무시).
+  final AudioGain gain;
 
   /// mp3 | m4a | opus
   final String audioFormat;

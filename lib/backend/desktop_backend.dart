@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models.dart';
 import '../util/names.dart';
 import 'backend.dart';
+import 'gain_args.dart';
 import 'ytdlp_args.dart';
 
 /// Windows용 엔진. %LOCALAPPDATA%\YTDL\bin 에 yt-dlp / ffmpeg / deno 를 두고 직접 실행한다.
@@ -208,7 +209,51 @@ class DesktopBackend extends Backend {
     if (token.cancelled) throw CancelledException();
     if (code != 0) throw Exception(_summarize(errLines));
     final path = parser.filePath;
+
+    // 음량 조절: 받은 파일을 같은 형식으로 다시 인코딩해서 바꿔치기한다.
+    if (options.kind == MediaKind.audio && options.gain.isActive && path != null) {
+      onProgress(const DownloadProgress(stage: '음량 조절 중…'));
+      try {
+        await _applyGain(path, options.gain, token);
+      } on CancelledException {
+        rethrow;
+      } catch (e) {
+        throw Exception('음량 조절에 실패했어요. 받은 파일은 음량 조절 없이 저장돼 있어요: $path\n'
+            '${e.toString().replaceFirst('Exception: ', '')}');
+      }
+    }
     return DownloadResult(location: path ?? _saveDir, filePath: path);
+  }
+
+  /// [path] 파일의 음량을 바꿔 같은 이름으로 다시 저장한다. 실패하면 원래 파일은 그대로 둔다.
+  Future<void> _applyGain(String path, AudioGain gain, CancelToken token) async {
+    final ext = extensionOf(path);
+    final encode = gainEncodeArgs(gain, ext);
+    if (encode == null) return;
+    final tmp = '${path.substring(0, path.length - ext.length - 1)}.gain.$ext';
+    try {
+      final proc = await Process.start(_ffmpeg, [
+        '-nostdin', '-y', '-loglevel', 'error',
+        '-i', path,
+        '-map_metadata', '0',
+        ...encode,
+        tmp,
+      ]);
+      token.onCancel = () => Process.run('taskkill', ['/T', '/F', '/PID', '${proc.pid}']);
+      final err = proc.stderr.transform(utf8.decoder).join();
+      unawaited(proc.stdout.drain<void>());
+      final code = await proc.exitCode;
+      final log = await err;
+      if (token.cancelled) throw CancelledException();
+      if (code != 0 || !File(tmp).existsSync() || File(tmp).lengthSync() == 0) {
+        throw Exception(_summarize(log.split('\n')));
+      }
+      File(path).deleteSync();
+      File(tmp).renameSync(path);
+    } finally {
+      final f = File(tmp);
+      if (f.existsSync()) f.deleteSync();
+    }
   }
 
   @override
@@ -216,8 +261,9 @@ class DesktopBackend extends Backend {
     String srcPath,
     double startSec,
     double endSec,
-    String outBaseName,
-  ) async {
+    String outBaseName, {
+    AudioGain gain = const AudioGain.none(),
+  }) async {
     final src = File(srcPath);
     if (!src.existsSync()) throw Exception('원본 파일을 찾을 수 없습니다: $srcPath');
     final ext = extensionOf(srcPath);
@@ -237,7 +283,8 @@ class DesktopBackend extends Backend {
         '-ss', startSec.toStringAsFixed(3),
         '-t', (endSec - startSec).toStringAsFixed(3),
         '-map_metadata', '0',
-        '-c', 'copy',
+        // 음량을 바꿀 때만 다시 인코딩하고, 아니면 그대로 복사(음질 손실 없음).
+        ...(gainEncodeArgs(gain, ext) ?? const ['-c', 'copy']),
         out,
       ],
       stdoutEncoding: utf8,

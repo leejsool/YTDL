@@ -107,7 +107,21 @@ class MainActivity : FlutterActivity() {
                             ?.filter { it.isFile && !it.name.endsWith(".part") }
                             ?.maxByOrNull { it.lastModified() }
                         ?: throw IOException("받은 파일을 찾지 못했습니다.")
-                    publish(file, audio)
+
+                    // 음량 조절: 받은 파일을 내장 ffmpeg 로 같은 형식으로 다시 인코딩한 뒤 저장한다.
+                    val gainArgs = call.argument<List<String>>("gainArgs")
+                    val finalFile = if (audio && gainArgs != null) {
+                        runOnUiThread { events?.success(mapOf("id" to id, "line" to "YTDL_GAIN")) }
+                        val out = File(File(tmp, "gain").apply { mkdirs() }, file.name)
+                        runFfmpeg(
+                            listOf("-nostdin", "-y", "-loglevel", "error",
+                                "-i", file.absolutePath, "-map_metadata", "0") +
+                                gainArgs + out.absolutePath
+                        )
+                        if (!out.exists() || out.length() == 0L) throw IOException("음량을 바꾼 파일이 비어 있습니다.")
+                        out
+                    } else file
+                    publish(finalFile, audio)
                 } finally {
                     tmp.deleteRecursively()
                 }
@@ -121,6 +135,8 @@ class MainActivity : FlutterActivity() {
                 val startMs = call.argument<Number>("startMs")!!.toLong()
                 val endMs = call.argument<Number>("endMs")!!.toLong()
                 val outName = call.argument<String>("outName")!!
+                // 음량을 바꿀 때만 값이 온다(다시 인코딩). 없으면 그대로 복사.
+                val encodeArgs = call.argument<List<String>>("encodeArgs") ?: listOf("-c", "copy")
 
                 val tmp = File(getExternalFilesDir(null) ?: filesDir, "tmp/trim${System.nanoTime()}").apply {
                     mkdirs()
@@ -134,9 +150,7 @@ class MainActivity : FlutterActivity() {
                             "-ss", "%.3f".format(java.util.Locale.US, startMs / 1000.0),
                             "-t", "%.3f".format(java.util.Locale.US, (endMs - startMs) / 1000.0),
                             "-map_metadata", "0",
-                            "-c", "copy",
-                            out.absolutePath,
-                        )
+                        ) + encodeArgs + out.absolutePath
                     )
                     if (!out.exists() || out.length() == 0L) throw IOException("잘라낸 파일이 비어 있습니다.")
                     publish(out, true)

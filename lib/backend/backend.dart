@@ -23,13 +23,15 @@ abstract class Backend {
   );
 
   /// 이미 저장한 음원 파일에서 [startSec]~[endSec] 만 잘라 새 파일([outBaseName].확장자)로 저장한다.
-  /// 재인코딩 없이 그대로 복사(-c copy)하므로 음질 손실이 없고 빠르다.
+  /// 음량 조절([gain])이 없으면 재인코딩 없이 그대로 복사(-c copy)하므로 음질 손실이 없고 빠르다.
+  /// 음량을 바꾸면 같은 형식으로 다시 인코딩해서 저장한다.
   Future<DownloadResult> trimAudio(
     String srcPath,
     double startSec,
     double endSec,
-    String outBaseName,
-  );
+    String outBaseName, {
+    AudioGain gain = const AudioGain.none(),
+  });
 
   /// yt-dlp 엔진을 최신으로 업데이트하고 결과 문구를 돌려준다.
   Future<String> updateEngine();

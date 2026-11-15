@@ -8,8 +8,14 @@ import '../util/names.dart';
 /// yt-dlp가 최종 파일 경로를 알려줄 때 쓰는 접두어.
 const String fileMarker = 'YTDL_FILE:';
 
+/// Android 쪽이 "받은 뒤 음량 조절 시작"을 알릴 때 보내는 줄.
+const String gainMarker = 'YTDL_GAIN';
+
 List<String> buildDownloadArgs(DownloadOptions o) {
   var name = '%(title).100s';
+  // 음량 조절은 yt-dlp 가 아니라 받은 뒤 ffmpeg 로 따로 한다(yt-dlp 는 이미 목표 형식이면
+  // 변환 단계를 건너뛰어 필터가 적용되지 않는다). 파일 이름 표시만 여기서 붙인다.
+  if (o.kind == MediaKind.audio) name += o.gain.nameTag;
   if (o.hasTrim) {
     name += cutSuffix(o.trimStart!, o.trimEnd!);
   }
@@ -66,6 +72,9 @@ class ProgressParser {
     if (line.startsWith(fileMarker)) {
       filePath = line.substring(fileMarker.length).trim();
       return const DownloadProgress(percent: 1, stage: '저장 중…');
+    }
+    if (line.startsWith(gainMarker)) {
+      return const DownloadProgress(percent: 1, stage: '음량 조절 중…');
     }
     final m = _pct.firstMatch(line);
     if (m != null) {
