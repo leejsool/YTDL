@@ -88,12 +88,17 @@ class _TrimSelectorState extends State<TrimSelector> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        RangeSlider(
-          min: 0,
+        Row(
+          children: [
+            _timeField('시작', _startCtl),
+            const SizedBox(width: 12),
+            _timeField('끝', _endCtl),
+          ],
+        ),
+        CutRangeSlider(
           max: max,
-          divisions: widget.duration > 0 ? widget.duration : null,
           values: RangeValues(widget.start.toDouble(), widget.end.toDouble()),
-          labels: RangeLabels(formatSeconds(widget.start), formatSeconds(widget.end)),
+          format: (t) => formatSeconds(t.round()),
           onChanged: widget.enabled
               ? (v) {
                   var s = v.start.round();
@@ -109,16 +114,6 @@ class _TrimSelectorState extends State<TrimSelector> {
                 }
               : null,
         ),
-        Row(
-          children: [
-            _timeField('시작', _startCtl),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 8),
-              child: Text('~'),
-            ),
-            _timeField('끝', _endCtl),
-          ],
-        ),
         const SizedBox(height: 6),
         Text(
           '잘라낼 길이 ${formatSeconds(length)}  (전체 ${formatSeconds(widget.duration)})',
@@ -126,5 +121,119 @@ class _TrimSelectorState extends State<TrimSelector> {
         ),
       ],
     );
+  }
+}
+
+/// 두 손잡이 사이의 자를 구간과 시간 눈금을 함께 표시한다.
+class CutRangeSlider extends StatelessWidget {
+  const CutRangeSlider({
+    super.key,
+    required this.max,
+    required this.values,
+    required this.format,
+    required this.onChanged,
+  });
+
+  final double max;
+  final RangeValues values;
+  final String Function(double) format;
+  final ValueChanged<RangeValues>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Column(
+      children: [
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: 7,
+            activeTrackColor: colors.primary,
+            inactiveTrackColor: colors.surfaceContainerHighest,
+            rangeTrackShape: const RoundedRectRangeSliderTrackShape(),
+            rangeThumbShape: _CutHandle(colors),
+            showValueIndicator: ShowValueIndicator.onDrag,
+          ),
+          child: RangeSlider(
+            max: max,
+            values: values,
+            labels: RangeLabels(format(values.start), format(values.end)),
+            semanticFormatterCallback: format,
+            onChanged: onChanged,
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              for (final value in [0.0, max / 2, max])
+                Text(
+                  format(value),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CutHandle extends RangeSliderThumbShape {
+  const _CutHandle(this.colors);
+
+  final ColorScheme colors;
+
+  @override
+  Size getPreferredSize(bool isEnabled, bool isDiscrete) => const Size(16, 24);
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset center, {
+    required Animation<double> activationAnimation,
+    required Animation<double> enableAnimation,
+    bool isDiscrete = false,
+    bool isEnabled = false,
+    bool isOnTop = false,
+    TextDirection textDirection = TextDirection.ltr,
+    required SliderThemeData sliderTheme,
+    Thumb thumb = Thumb.start,
+    bool isPressed = false,
+  }) {
+    final rect = Rect.fromCenter(center: center, width: 15, height: 23);
+    final shape = RRect.fromRectAndRadius(rect, const Radius.circular(5));
+    final accent = isEnabled ? colors.primary : colors.outline;
+    final canvas = context.canvas;
+    canvas.drawShadow(
+      Path()..addRRect(shape),
+      colors.shadow.withValues(alpha: .27),
+      2,
+      true,
+    );
+    canvas.drawRRect(
+      shape,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [colors.surface, colors.surfaceContainerHighest],
+        ).createShader(rect),
+    );
+    canvas.drawRRect(
+      shape,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..color = accent,
+    );
+    final grip = Paint()
+      ..color = accent.withValues(alpha: .7)
+      ..strokeWidth = 1;
+    for (final x in [-1.6, 1.6]) {
+      canvas.drawLine(center + Offset(x, -4), center + Offset(x, 4), grip);
+    }
   }
 }

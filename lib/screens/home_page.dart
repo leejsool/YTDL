@@ -7,7 +7,9 @@ import '../util/names.dart';
 import '../state/app_state.dart';
 import '../util/size_estimate.dart';
 import '../util/time_format.dart';
+import '../util/youtube_url.dart';
 import '../widgets/gain_selector.dart';
+import '../widgets/range_preview.dart';
 import '../widgets/trim_selector.dart';
 
 class HomePage extends StatefulWidget {
@@ -96,9 +98,26 @@ class _HomePageState extends State<HomePage> {
       final shared = await _b.takeInitialSharedText();
       if (!mounted) return;
       setState(() => _ready = true);
-      if (shared != null) _acceptUrl(shared);
+      if (shared != null) {
+        _acceptUrl(shared);
+      } else {
+        await _acceptClipboardOnStart();
+      }
     } catch (e) {
       if (mounted) setState(() => _setupError = _msg(e));
+    }
+  }
+
+  /// 앱을 시작할 때 클립보드에 유튜브 주소가 있으면 입력칸에 넣고 바로 조회한다.
+  /// (유튜브 주소가 아니거나 클립보드를 못 읽으면 아무 일도 하지 않는다.)
+  Future<void> _acceptClipboardOnStart() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final url = findYoutubeUrl(data?.text);
+      if (!mounted || url == null || _urlCtl.text.trim().isNotEmpty) return;
+      _acceptUrl(url);
+    } catch (_) {
+      // 클립보드 접근이 막혀 있어도 앱은 그대로 쓸 수 있다.
     }
   }
 
@@ -117,6 +136,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _fetch() async {
+    if (!_ready || _fetching || _downloading) return;
     final raw = _urlCtl.text.trim();
     final url = _urlRe.firstMatch(raw)?.group(0);
     if (url == null) {
@@ -140,6 +160,7 @@ class _HomePageState extends State<HomePage> {
         _trimStart = 0;
         _trimEnd = info.durationSeconds;
         _trimOn = false;
+        _gain = const AudioGain.none();
       });
     } catch (e) {
       if (mounted) setState(() => _fetchError = _msg(e));
@@ -170,14 +191,9 @@ class _HomePageState extends State<HomePage> {
         trimEnd: trim ? _trimEnd : null,
         gain: _kind == MediaKind.audio ? _gain : const AudioGain.none(),
       );
-      final r = await _b.download(
-        info.url,
-        options,
-        (p) {
-          if (mounted) setState(() => _progress = p);
-        },
-        token,
-      );
+      final r = await _b.download(info.url, options, (p) {
+        if (mounted) setState(() => _progress = p);
+      }, token);
       if (!mounted) return;
       setState(() {
         _result = r;
@@ -227,26 +243,99 @@ class _HomePageState extends State<HomePage> {
   // ------------------------------------------------------------------ UI
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('YTDL'),
-        actions: [
-          if (_ready)
-            IconButton(
-              tooltip: '다운로드 엔진 업데이트 (유튜브가 안 받아질 때)',
-              icon: const Icon(Icons.system_update_alt),
-              onPressed: _downloading ? null : _updateEngine,
+    return LayoutBuilder(
+      builder: (context, box) {
+        final wide = box.maxWidth >= 590;
+        final gutter = wide ? 30.0 : 16.0;
+        final pinFooter = box.maxHeight >= 420;
+        return Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1080),
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        gutter,
+                        wide ? 26 : 16,
+                        gutter,
+                        20,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _buildHeader(wide),
+                          const SizedBox(height: 20),
+                          if (!_ready)
+                            _buildSetup()
+                          else ...[
+                            _buildMain(wide),
+                            if (!pinFooter) ...[
+                              const SizedBox(height: 18),
+                              _buildFooter(wide, gutter),
+                            ],
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
-        ],
-      ),
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 720),
-            child: !_ready ? _buildSetup() : _buildMain(context),
+            if (_ready && pinFooter) _buildFooter(wide, gutter),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildHeader(bool wide) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '다운로드',
+                style:
+                    (wide
+                            ? theme.textTheme.headlineLarge
+                            : theme.textTheme.headlineSmall)
+                        ?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -1,
+                        ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '유튜브 링크를 음원이나 영상으로 저장하세요.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
           ),
         ),
-      ),
+        if (_ready) ...[
+          const SizedBox(width: 8),
+          if (wide)
+            OutlinedButton.icon(
+              onPressed: _downloading ? null : _updateEngine,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('엔진 업데이트 확인'),
+            )
+          else
+            IconButton(
+              tooltip: '엔진 업데이트 확인',
+              onPressed: _downloading ? null : _updateEngine,
+              icon: const Icon(Icons.refresh),
+            ),
+        ],
+      ],
     );
   }
 
@@ -281,10 +370,10 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildMain(BuildContext context) {
+  Widget _buildMain(bool wide) {
     final info = _info;
-    return ListView(
-      padding: const EdgeInsets.all(16),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildUrlRow(),
         if (_fetchError != null) _errorText(_fetchError!),
@@ -295,205 +384,474 @@ class _HomePageState extends State<HomePage> {
           ),
         if (info != null) ...[
           const SizedBox(height: 16),
-          _buildInfoCard(info),
-          const SizedBox(height: 16),
-          _buildOptions(info),
-          const SizedBox(height: 16),
-          _buildActionArea(),
+          if (wide)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(flex: 9, child: _buildInfoCard(info, wide)),
+                const SizedBox(width: 16),
+                Expanded(flex: 11, child: _buildOptions(info)),
+              ],
+            )
+          else ...[
+            _buildInfoCard(info, wide),
+            const SizedBox(height: 12),
+            _buildOptions(info),
+          ],
         ],
-        const SizedBox(height: 24),
-        _buildSaveLocation(),
+        if (info == null && !_fetching)
+          Padding(
+            padding: const EdgeInsets.only(top: 18),
+            child: _buildEmpty(),
+          ),
       ],
+    );
+  }
+
+  Widget _buildEmpty() {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 16),
+        child: Column(
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: colors.secondaryContainer,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(Icons.video_library_outlined, color: colors.primary),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '저장할 영상 링크를 입력하세요',
+              style: theme.textTheme.titleSmall,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   Widget _buildUrlRow() {
-    return Row(
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: TextField(
-            controller: _urlCtl,
-            enabled: !_downloading,
-            keyboardType: TextInputType.url,
-            textInputAction: TextInputAction.go,
-            decoration: InputDecoration(
-              labelText: '유튜브 링크',
-              border: const OutlineInputBorder(),
-              suffixIcon: IconButton(
-                tooltip: '붙여넣기',
-                icon: const Icon(Icons.content_paste),
-                onPressed: _downloading ? null : _paste,
+        Text('유튜브 링크', style: theme.textTheme.labelLarge),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _urlCtl,
+                enabled: !_downloading && !_fetching,
+                keyboardType: TextInputType.url,
+                textInputAction: TextInputAction.go,
+                decoration: InputDecoration(
+                  hintText: 'https://youtu.be/…',
+                  prefixIcon: const Icon(Icons.link, size: 20),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                  suffixIcon: IconButton(
+                    tooltip: '붙여넣기',
+                    icon: const Icon(Icons.content_paste),
+                    onPressed: _downloading ? null : _paste,
+                  ),
+                ),
+                onSubmitted: (_) => _fetch(),
               ),
             ),
-            onSubmitted: (_) => _fetch(),
-          ),
-        ),
-        const SizedBox(width: 8),
-        FilledButton(
-          onPressed: (_fetching || _downloading) ? null : _fetch,
-          child: const Padding(
-            padding: EdgeInsets.symmetric(vertical: 14, horizontal: 4),
-            child: Text('조회'),
-          ),
+            const SizedBox(width: 8),
+            FilledButton.tonalIcon(
+              onPressed: (_fetching || _downloading) ? null : _fetch,
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 11),
+              ),
+              icon: const Icon(Icons.search, size: 17),
+              label: const Text('조회'),
+            ),
+          ],
         ),
       ],
     );
   }
 
-  Widget _buildInfoCard(MediaInfo info) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildInfoCard(MediaInfo info, bool wide) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final placeholder = ColoredBox(
+      color: colors.surfaceContainerHighest,
+      child: Icon(Icons.movie_outlined, color: colors.primary),
+    );
+    final thumbnail = AspectRatio(
+      aspectRatio: 16 / 9,
+      child: Stack(
+        fit: StackFit.expand,
         children: [
-          if (info.thumbnail != null)
-            SizedBox(
-              width: 140,
-              height: 100,
-              child: Image.network(
-                info.thumbnail!,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => const ColoredBox(
-                  color: Colors.black12,
-                  child: Icon(Icons.music_video),
+          if (info.thumbnail == null)
+            placeholder
+          else
+            Image.network(
+              info.thumbnail!,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => placeholder,
+            ),
+          if (info.durationSeconds > 0)
+            Positioned(
+              right: 5,
+              bottom: 5,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: const Color(0xE621192F),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 2,
+                  ),
+                  child: Text(
+                    formatSeconds(info.durationSeconds),
+                    style: const TextStyle(fontSize: 11, color: Colors.white),
+                  ),
                 ),
               ),
             ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+        ],
+      ),
+    );
+    final details = Padding(
+      padding: EdgeInsets.all(wide ? 15 : 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'YouTube',
+            style: theme.textTheme.labelSmall?.copyWith(color: colors.primary),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            info.title,
+            maxLines: wide ? 3 : 2,
+            overflow: TextOverflow.ellipsis,
+            style:
+                (wide ? theme.textTheme.titleLarge : theme.textTheme.titleSmall)
+                    ?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          if (info.uploader.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              info.uploader,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: wide
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [thumbnail, details],
+            )
+          : Padding(
+              padding: const EdgeInsets.all(7),
+              child: Row(
                 children: [
-                  Text(info.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 4),
-                  Text(
-                    [
-                      if (info.uploader.isNotEmpty) info.uploader,
-                      if (info.durationSeconds > 0) formatSeconds(info.durationSeconds),
-                    ].join(' · '),
-                    style: Theme.of(context).textTheme.bodySmall,
+                  SizedBox(
+                    width: 105,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(7),
+                      child: thumbnail,
+                    ),
                   ),
+                  Expanded(child: details),
                 ],
               ),
             ),
-          ),
-        ],
-      ),
     );
   }
 
   Widget _buildOptions(MediaInfo info) {
     final busy = _downloading;
     final canTrim = info.durationSeconds > 1;
-    // 구간 자르기를 켰으면 자를 길이 비율만큼 용량도 줄여서 보여 준다.
     final trimmed = _trimOn && canTrim;
-    final fraction = trimmed ? (_trimEnd - _trimStart) / info.durationSeconds : 1.0;
-    String? size(int? bytes) => bytes == null ? null : '약 ${formatBytes(bytes)}';
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SegmentedButton<MediaKind>(
-          segments: const [
-            ButtonSegment(value: MediaKind.audio, icon: Icon(Icons.music_note), label: Text('음원')),
-            ButtonSegment(value: MediaKind.video, icon: Icon(Icons.movie), label: Text('영상')),
+    final fraction = _selectedFraction(info);
+    String? size(int? bytes) =>
+        bytes == null ? null : '약 ${formatBytes(bytes)}';
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final sectionDivider = Border(
+      top: BorderSide(color: colors.outlineVariant),
+    );
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(13, 13, 13, 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '저장 옵션',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                Text(
+                  _kind == MediaKind.audio ? '예상 용량' : 'MP4 · 예상 용량',
+                  style: theme.textTheme.labelSmall,
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            SegmentedButton<MediaKind>(
+              showSelectedIcon: false,
+              style: SegmentedButton.styleFrom(
+                backgroundColor: colors.surfaceContainerHighest,
+                selectedBackgroundColor: colors.secondaryContainer,
+                selectedForegroundColor: colors.primary,
+                side: BorderSide(color: colors.outlineVariant),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              segments: const [
+                ButtonSegment(
+                  value: MediaKind.audio,
+                  icon: Icon(Icons.headphones, size: 17),
+                  label: Text('음원'),
+                ),
+                ButtonSegment(
+                  value: MediaKind.video,
+                  icon: Icon(Icons.movie_outlined, size: 17),
+                  label: Text('영상'),
+                ),
+              ],
+              selected: {_kind},
+              onSelectionChanged: busy
+                  ? null
+                  : (s) => setState(() => _kind = s.first),
+            ),
+            const SizedBox(height: 12),
+            if (_kind == MediaKind.audio)
+              _formats<String>(
+                values: const {'mp3': 'MP3', 'm4a': 'M4A', 'opus': 'OPUS'},
+                sub: {
+                  for (final f in const ['mp3', 'm4a', 'opus'])
+                    f: size(estimateAudioBytes(info, f, fraction: fraction)),
+                },
+                selected: _audioFormat,
+                onSelected: (v) => setState(() => _audioFormat = v),
+                enabled: !busy,
+              )
+            else
+              _formats<int?>(
+                values: const {
+                  null: '최고',
+                  1080: '1080p',
+                  720: '720p',
+                  480: '480p',
+                  360: '360p',
+                },
+                sub: {
+                  for (final h in const <int?>[null, 1080, 720, 480, 360])
+                    h: size(estimateVideoBytes(info, h, fraction: fraction)),
+                },
+                selected: _maxHeight,
+                onSelected: (v) => setState(() => _maxHeight = v),
+                enabled: !busy,
+              ),
+            const SizedBox(height: 10),
+            ExpansionTile(
+              initiallyExpanded: true,
+              dense: true,
+              tilePadding: EdgeInsets.zero,
+              shape: sectionDivider,
+              collapsedShape: sectionDivider,
+              leading: Icon(Icons.content_cut, size: 17, color: colors.primary),
+              title: const Text('구간 자르기'),
+              subtitle: trimmed
+                  ? Text(
+                      '${formatSeconds(_trimStart)}–${formatSeconds(_trimEnd)}',
+                    )
+                  : null,
+              childrenPadding: const EdgeInsets.only(bottom: 12),
+              children: [
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('필요한 구간만 잘라서 저장'),
+                  subtitle: canTrim
+                      ? null
+                      : const Text('길이를 알 수 없는 영상은 자를 수 없습니다.'),
+                  value: trimmed,
+                  onChanged: (busy || !canTrim)
+                      ? null
+                      : (v) => setState(() => _trimOn = v),
+                ),
+                if (trimmed)
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: colors.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(11),
+                      border: Border.all(color: colors.outlineVariant),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TrimSelector(
+                          duration: info.durationSeconds,
+                          start: _trimStart,
+                          end: _trimEnd,
+                          enabled: !busy,
+                          onChanged: (s, e) => setState(() {
+                            _trimStart = s;
+                            _trimEnd = e;
+                          }),
+                        ),
+                        RangePreview(
+                          // 다른 영상을 조회하면 미리듣기 플레이어도 새로 만든다.
+                          key: ValueKey(info.url),
+                          start: _trimStart,
+                          end: _trimEnd,
+                          storyboard: info.storyboard,
+                          audioUrl: info.previewAudioUrl,
+                          enabled: !busy,
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            if (_kind == MediaKind.audio)
+              ExpansionTile(
+                initiallyExpanded: true,
+                maintainState: true,
+                dense: true,
+                tilePadding: EdgeInsets.zero,
+                shape: sectionDivider,
+                collapsedShape: sectionDivider,
+                leading: Icon(
+                  Icons.volume_up_outlined,
+                  size: 17,
+                  color: colors.primary,
+                ),
+                title: const Text('음량 조절'),
+                childrenPadding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
+                children: [
+                  GainSelector(
+                    value: _gain,
+                    enabled: !busy,
+                    analysisSource: (
+                      info.url,
+                      trimmed ? _trimStart : null,
+                      trimmed ? _trimEnd : null,
+                    ),
+                    onAuto: (token) => _b.measureGain(
+                      info.url,
+                      token,
+                      remote: true,
+                      startSec: trimmed ? _trimStart.toDouble() : null,
+                      endSec: trimmed ? _trimEnd.toDouble() : null,
+                    ),
+                    onChanged: (g) => setState(() => _gain = g),
+                  ),
+                ],
+              ),
           ],
-          selected: {_kind},
-          onSelectionChanged: busy ? null : (s) => setState(() => _kind = s.first),
         ),
-        const SizedBox(height: 12),
-        if (_kind == MediaKind.audio)
-          _chips<String>(
-            label: '형식',
-            values: const {'mp3': 'MP3', 'm4a': 'M4A (AAC)', 'opus': 'OPUS'},
-            sub: {
-              for (final f in const ['mp3', 'm4a', 'opus'])
-                f: size(estimateAudioBytes(info, f, fraction: fraction)),
-            },
-            selected: _audioFormat,
-            onSelected: (v) => setState(() => _audioFormat = v),
-            enabled: !busy,
-          )
-        else
-          _chips<int?>(
-            label: '화질',
-            values: const {null: '최고', 1080: '1080p', 720: '720p', 480: '480p', 360: '360p'},
-            sub: {
-              for (final h in const <int?>[null, 1080, 720, 480, 360])
-                h: size(estimateVideoBytes(info, h, fraction: fraction)),
-            },
-            selected: _maxHeight,
-            onSelected: (v) => setState(() => _maxHeight = v),
-            enabled: !busy,
-          ),
-        Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Text(
-            trimmed ? '용량은 자를 구간 기준의 예상치예요.' : '용량은 예상치라 실제와 조금 다를 수 있어요.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ),
-        if (_kind == MediaKind.audio) ...[
-          const SizedBox(height: 12),
-          GainSelector(
-            value: _gain,
-            enabled: !busy,
-            onChanged: (g) => setState(() => _gain = g),
-          ),
-        ],
-        const SizedBox(height: 8),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('필요한 구간만 잘라서 저장'),
-          subtitle: canTrim ? null : const Text('길이를 알 수 없는 영상은 자를 수 없습니다.'),
-          value: _trimOn && canTrim,
-          onChanged: (busy || !canTrim) ? null : (v) => setState(() => _trimOn = v),
-        ),
-        if (_trimOn && canTrim)
-          TrimSelector(
-            duration: info.durationSeconds,
-            start: _trimStart,
-            end: _trimEnd,
-            enabled: !busy,
-            onChanged: (s, e) => setState(() {
-              _trimStart = s;
-              _trimEnd = e;
-            }),
-          ),
-      ],
+      ),
     );
   }
 
-  Widget _chips<T>({
-    required String label,
+  double _selectedFraction(MediaInfo info) =>
+      _trimOn && info.durationSeconds > 1
+      ? (_trimEnd - _trimStart) / info.durationSeconds
+      : 1.0;
+
+  Widget _formats<T>({
     required Map<T, String> values,
     required T selected,
     required void Function(T) onSelected,
     required bool enabled,
     Map<T, String?>? sub,
   }) {
-    final small = Theme.of(context).textTheme.labelSmall;
-    return Wrap(
-      spacing: 8,
-      runSpacing: 4,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        Text(label, style: Theme.of(context).textTheme.labelLarge),
-        for (final e in values.entries)
-          ChoiceChip(
-            label: sub?[e.key] == null
-                ? Text(e.value)
-                : Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [Text(e.value), Text(sub![e.key]!, style: small)],
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return LayoutBuilder(
+      builder: (context, box) {
+        const spacing = 7.0;
+        final columns = box.maxWidth >= 195 ? 3 : 2;
+        final width = (box.maxWidth - spacing * (columns - 1)) / columns;
+        return Wrap(
+          spacing: spacing,
+          runSpacing: spacing,
+          children: [
+            for (final e in values.entries)
+              SizedBox(
+                width: width,
+                child: Semantics(
+                  button: true,
+                  selected: e.key == selected,
+                  child: Material(
+                    color: e.key == selected
+                        ? colors.secondaryContainer
+                        : colors.surface,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(9),
+                      side: BorderSide(
+                        color: e.key == selected
+                            ? colors.primary
+                            : colors.outlineVariant,
+                      ),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: enabled ? () => onSelected(e.key) : null,
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              e.value,
+                              style: theme.textTheme.labelLarge?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                color: e.key == selected
+                                    ? colors.primary
+                                    : colors.onSurface,
+                              ),
+                            ),
+                            Text(
+                              sub?[e.key] ?? '—',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.labelSmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
-            selected: e.key == selected,
-            onSelected: enabled ? (_) => onSelected(e.key) : null,
-          ),
-      ],
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -502,16 +860,7 @@ class _HomePageState extends State<HomePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (!_downloading)
-          FilledButton.icon(
-            onPressed: _download,
-            icon: const Icon(Icons.download),
-            label: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text('다운로드'),
-            ),
-          )
-        else ...[
+        if (_downloading) ...[
           LinearProgressIndicator(value: p?.percent),
           const SizedBox(height: 8),
           Row(
@@ -521,8 +870,8 @@ class _HomePageState extends State<HomePage> {
                   p == null
                       ? ''
                       : p.percent != null
-                          ? '${p.stage} ${(p.percent! * 100).toStringAsFixed(0)}%'
-                          : p.stage,
+                      ? '${p.stage} ${(p.percent! * 100).toStringAsFixed(0)}%'
+                      : p.stage,
                 ),
               ),
               TextButton(
@@ -547,31 +896,169 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildFooter(bool wide, double gutter) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final info = _info;
+    final trimmed = _trimOn && info != null && info.durationSeconds > 1;
+    final bytes = info == null
+        ? null
+        : _kind == MediaKind.audio
+        ? estimateAudioBytes(
+            info,
+            _audioFormat,
+            fraction: _selectedFraction(info),
+          )
+        : estimateVideoBytes(
+            info,
+            _maxHeight,
+            fraction: _selectedFraction(info),
+          );
+    final format = _kind == MediaKind.audio
+        ? _audioFormat.toUpperCase()
+        : 'MP4 ${_maxHeight == null ? '최고' : '${_maxHeight}p'}';
+    final button = FilledButton.icon(
+      onPressed: info == null || _downloading || _fetching ? null : _download,
+      icon: const Icon(Icons.download, size: 19),
+      label: Text(_downloading ? '다운로드 중…' : '다운로드'),
+    );
+    final summary = info == null
+        ? null
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: wide
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
+            children: [
+              Text(
+                bytes == null ? format : '$format · 약 ${formatBytes(bytes)}',
+                maxLines: 2,
+                style: theme.textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              if (info.durationSeconds > 0)
+                Text(
+                  trimmed
+                      ? '선택 구간 · ${formatSeconds(_trimEnd - _trimStart)}'
+                      : '전체 길이 · ${formatSeconds(info.durationSeconds)}',
+                  style: theme.textTheme.labelSmall,
+                ),
+            ],
+          );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border(top: BorderSide(color: colors.outlineVariant)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1080),
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: gutter, vertical: 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_downloading || _result != null || _dlError != null) ...[
+                    _buildActionArea(),
+                    const SizedBox(height: 10),
+                  ],
+                  if (wide)
+                    Row(
+                      children: [
+                        Expanded(child: _buildSaveLocation()),
+                        if (summary != null) ...[
+                          const SizedBox(width: 12),
+                          Flexible(child: summary),
+                        ],
+                        const SizedBox(width: 12),
+                        button,
+                      ],
+                    )
+                  else
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildSaveLocation(),
+                        const SizedBox(height: 8),
+                        if (summary == null)
+                          button
+                        else
+                          Row(
+                            children: [
+                              Expanded(child: summary),
+                              const SizedBox(width: 8),
+                              button,
+                            ],
+                          ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildResult(DownloadResult r) {
     return Card(
       color: Theme.of(context).colorScheme.secondaryContainer,
-      margin: const EdgeInsets.only(top: 12),
       child: ListTile(
+        dense: true,
         leading: const Icon(Icons.check_circle),
         title: const Text('저장 완료'),
-        subtitle: SelectableText(r.location),
+        subtitle: Tooltip(
+          message: r.location,
+          child: SelectableText(r.location, maxLines: 2),
+        ),
         trailing: (!_b.canReveal || r.filePath == null)
             ? null
-            : TextButton(onPressed: () => _b.reveal(r), child: const Text('폴더 열기')),
+            : TextButton(
+                onPressed: () => _b.reveal(r),
+                child: const Text('폴더 열기'),
+              ),
       ),
     );
   }
 
   Widget _buildSaveLocation() {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
     return Row(
       children: [
-        const Icon(Icons.folder_outlined, size: 18),
+        Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            color: colors.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(Icons.folder_outlined, size: 18, color: colors.primary),
+        ),
         const SizedBox(width: 8),
         Expanded(
-          child: Text(
-            _b.saveLocationLabel,
-            style: Theme.of(context).textTheme.bodySmall,
-            overflow: TextOverflow.ellipsis,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '저장 위치',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              Text(
+                _b.saveLocationLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelMedium,
+              ),
+            ],
           ),
         ),
         if (_b.canChooseFolder)
@@ -589,7 +1076,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _errorText(String text) => Padding(
-        padding: const EdgeInsets.only(top: 12),
-        child: Text(text, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-      );
+    padding: const EdgeInsets.only(top: 12),
+    child: Text(
+      text,
+      style: TextStyle(color: Theme.of(context).colorScheme.error),
+    ),
+  );
 }

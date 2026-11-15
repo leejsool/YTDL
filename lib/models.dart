@@ -1,6 +1,8 @@
 /// 앱 전체에서 쓰는 데이터 모델.
 library;
 
+import 'util/preview_media.dart';
+
 enum MediaKind { audio, video }
 
 /// yt-dlp 가 알려 주는 스트림(포맷) 하나. 예상 용량 계산에만 쓴다.
@@ -53,6 +55,8 @@ class MediaInfo {
     required this.durationSeconds,
     this.thumbnail,
     this.formats = const [],
+    this.storyboard,
+    this.previewAudioUrl,
   });
 
   final String id;
@@ -63,8 +67,18 @@ class MediaInfo {
   final String? thumbnail;
   final List<FormatInfo> formats;
 
+  /// 구간 자르기 미리보기용 장면 모음(없으면 장면 미리보기를 숨긴다).
+  final Storyboard? storyboard;
+
+  /// 구간 미리듣기용 소리 전용 스트림 주소(없으면 미리듣기를 숨긴다). 몇 시간 뒤에는 만료된다.
+  final String? previewAudioUrl;
+
   factory MediaInfo.fromJson(Map<String, dynamic> j, String url) {
+    final rawFormats = j['formats'] as List?;
+    final duration = (j['duration'] as num?)?.round() ?? 0;
     return MediaInfo(
+      storyboard: Storyboard.fromFormats(rawFormats, duration),
+      previewAudioUrl: pickPreviewAudioUrl(rawFormats),
       id: (j['id'] ?? '').toString(),
       title: (j['title'] ?? '(제목 없음)').toString(),
       uploader: (j['uploader'] ?? j['channel'] ?? '').toString(),

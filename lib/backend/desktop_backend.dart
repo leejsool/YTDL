@@ -168,6 +168,61 @@ class DesktopBackend extends Backend {
     return MediaInfo.fromJson(jsonDecode(r.stdout as String) as Map<String, dynamic>, url);
   }
 
+  @override
+  Future<double> measureGain(
+    String source,
+    CancelToken token, {
+    bool remote = false,
+    double? startSec,
+    double? endSec,
+  }) async {
+    final work = remote ? await Directory.systemTemp.createTemp('ytdl_gain_') : null;
+    try {
+      var input = source;
+      if (work != null) {
+        final output = await _runGainProbe(_ytdlp, [
+          ..._common, '-P', work.path,
+          ...buildAudioProbeArgs(startSec: startSec, endSec: endSec), '--', source,
+        ], token);
+        final parser = ProgressParser();
+        for (final line in const LineSplitter().convert(output)) {
+          parser.parse(line);
+        }
+        input = parser.filePath ?? (throw Exception('분석할 음원을 받지 못했습니다.'));
+      }
+      final log = await _runGainProbe(_ffmpeg, gainMeasureArgs(
+        input, startSec: remote ? null : startSec, endSec: remote ? null : endSec,
+      ), token);
+      return gainFromMeasurement(log);
+    } finally {
+      if (work != null) await work.delete(recursive: true);
+    }
+  }
+
+  Future<String> _runGainProbe(String executable, List<String> args, CancelToken token) async {
+    if (token.cancelled) throw CancelledException();
+    final process = await Process.start(executable, args, environment: _env);
+    void stop() {
+      unawaited(Process.run('taskkill', ['/T', '/F', '/PID', '${process.pid}']).then<void>((_) {}, onError: (Object _) {}));
+    }
+    token.onCancel = stop;
+    if (token.cancelled) stop();
+    try {
+      const decoder = Utf8Decoder(allowMalformed: true);
+      final logs = Future.wait([
+        process.stdout.transform(decoder).join(),
+        process.stderr.transform(decoder).join(),
+      ]);
+      final code = await process.exitCode;
+      final output = (await logs.timeout(const Duration(seconds: 8), onTimeout: () => ['', ''])).join('\n');
+      if (token.cancelled) throw CancelledException();
+      if (code != 0) throw Exception(_summarize(output.split('\n')));
+      return output;
+    } finally {
+      token.onCancel = null;
+    }
+  }
+
   // ---------------------------------------------------------------- 다운로드
   @override
   Future<DownloadResult> download(

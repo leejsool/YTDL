@@ -30,7 +30,17 @@ class EditPage extends StatefulWidget {
 
 class _EditPageState extends State<EditPage> {
   /// Windows 파일 선택창에 보여 줄 확장자. (-c copy 로 잘라도 문제없는 음원 형식)
-  static const supportedExtensions = ['mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'oga', 'opus', 'wma'];
+  static const supportedExtensions = [
+    'mp3',
+    'm4a',
+    'aac',
+    'flac',
+    'wav',
+    'ogg',
+    'oga',
+    'opus',
+    'wma',
+  ];
 
   String? _note;
   String? _noteForPath;
@@ -67,7 +77,7 @@ class _EditPageState extends State<EditPage> {
         type: Platform.isAndroid ? FileType.audio : FileType.custom,
         allowedExtensions: Platform.isAndroid ? null : supportedExtensions,
       );
-      if (files.isEmpty) return; // 취소
+      if (!mounted || files.isEmpty) return;
       final f = files.first;
       final path = f.path;
       if (path == null) {
@@ -76,7 +86,12 @@ class _EditPageState extends State<EditPage> {
       }
       openFile(path, displayName: f.name);
     } catch (e) {
-      if (mounted) setState(() => _error = '파일을 열지 못했습니다: ${e.toString().replaceFirst('Exception: ', '')}');
+      if (mounted) {
+        setState(
+          () => _error =
+              '파일을 열지 못했습니다: ${e.toString().replaceFirst('Exception: ', '')}',
+        );
+      }
     } finally {
       if (mounted) setState(() => _picking = false);
     }
@@ -88,7 +103,11 @@ class _EditPageState extends State<EditPage> {
       setState(() => _error = '파일을 찾을 수 없습니다: $path');
       return;
     }
-    widget.controller.openLocal(path, displayName: displayName, recent: widget.recent);
+    widget.controller.openLocal(
+      path,
+      displayName: displayName,
+      recent: widget.recent,
+    );
   }
 
   void _onSaved(SavedAudio s) {
@@ -104,20 +123,26 @@ class _EditPageState extends State<EditPage> {
     final cur = widget.controller.current;
     final recent = widget.recent.items;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('편집')),
-      body: SafeArea(
-        child: Center(
+    return LayoutBuilder(
+      builder: (context, box) {
+        final wide = box.maxWidth >= 590;
+        final gutter = wide ? 30.0 : 16.0;
+        return Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 720),
+            constraints: const BoxConstraints(maxWidth: 1080),
             child: ListView(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.fromLTRB(gutter, wide ? 26 : 16, gutter, 20),
               children: [
-                _buildOpenCard(theme, cur),
+                _buildHeading(theme, wide, cur != null),
+                const SizedBox(height: 18),
+                if (cur == null) _buildOpenCard(theme),
                 if (_error != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
-                    child: Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
+                    child: Text(
+                      _error!,
+                      style: TextStyle(color: theme.colorScheme.error),
+                    ),
                   ),
                 if (cur != null)
                   AudioEditor(
@@ -133,40 +158,84 @@ class _EditPageState extends State<EditPage> {
                   const SizedBox(height: 24),
                   Text('최근 파일', style: theme.textTheme.titleSmall),
                   const SizedBox(height: 4),
-                  for (final a in recent) _recentTile(theme, a, a.path == cur?.path),
+                  for (final a in recent)
+                    _recentTile(theme, a, a.path == cur?.path),
                 ],
               ],
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildOpenCard(ThemeData theme, SavedAudio? cur) {
+  Widget _openButton() => FilledButton.tonalIcon(
+    onPressed: _picking ? null : _pick,
+    icon: const Icon(Icons.folder_open, size: 18),
+    label: Text(_picking ? '여는 중…' : '음원 파일 선택'),
+  );
+
+  Widget _buildHeading(ThemeData theme, bool wide, bool hasFile) {
+    final heading = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '음원 편집',
+          style:
+              (wide
+                      ? theme.textTheme.headlineLarge
+                      : theme.textTheme.headlineSmall)
+                  ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -1),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '구간을 자르거나 음량을 조절해 새 파일로 저장하세요.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+    if (!hasFile) return heading;
+    if (wide) {
+      return Row(
+        children: [
+          Expanded(child: heading),
+          const SizedBox(width: 10),
+          _openButton(),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [heading, const SizedBox(height: 10), _openButton()],
+    );
+  }
+
+  Widget _buildOpenCard(ThemeData theme) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              const Icon(Icons.library_music),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  cur == null ? '편집할 음원을 열어 주세요' : '다른 음원 열기',
-                  style: theme.textTheme.titleMedium,
+            Row(
+              children: [
+                const Icon(Icons.library_music),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '편집할 음원을 열어 주세요',
+                    style: theme.textTheme.titleMedium,
+                  ),
                 ),
-              ),
-            ]),
+              ],
+            ),
             const SizedBox(height: 8),
             Text(
               Platform.isAndroid
-                  ? '휴대폰에 있는 음악 파일을 불러와서 듣고, 필요한 구간만 잘라 새 파일로 저장해요. '
-                      '잘라낸 파일은 Music/YTDL 에 저장돼요.'
-                  : '컴퓨터에 있는 음악 파일을 불러와서 듣고, 필요한 구간만 잘라 새 파일로 저장해요. '
-                      '잘라낸 파일은 원본 파일과 같은 폴더에 저장되고, 원본은 그대로 남아요.',
+                  ? '새 파일은 Music/YTDL에 저장됩니다.'
+                  : '새 파일은 원본 파일과 같은 폴더에 저장됩니다.',
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 4),
@@ -175,11 +244,7 @@ class _EditPageState extends State<EditPage> {
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: _picking ? null : _pick,
-              icon: const Icon(Icons.folder_open),
-              label: Text(_picking ? '여는 중…' : '음원 파일 선택'),
-            ),
+            _openButton(),
           ],
         ),
       ),
@@ -193,8 +258,16 @@ class _EditPageState extends State<EditPage> {
       child: ListTile(
         dense: true,
         leading: const Icon(Icons.music_note),
-        title: Text(baseNameOf(a.path), maxLines: 2, overflow: TextOverflow.ellipsis),
-        subtitle: Text(a.location, maxLines: 1, overflow: TextOverflow.ellipsis),
+        title: Text(
+          baseNameOf(a.path),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          a.location,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         trailing: IconButton(
           tooltip: '목록에서 빼기 (파일은 지워지지 않아요)',
           icon: const Icon(Icons.close),

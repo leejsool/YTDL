@@ -11,6 +11,15 @@ const String fileMarker = 'YTDL_FILE:';
 /// Android 쪽이 "받은 뒤 음량 조절 시작"을 알릴 때 보내는 줄.
 const String gainMarker = 'YTDL_GAIN';
 
+List<String> buildAudioProbeArgs({double? startSec, double? endSec}) => [
+      '--no-playlist', '--no-progress', '--no-warnings',
+      '-f', 'bestaudio/best', '-o', 'probe.%(ext)s',
+      '--print', 'after_move:$fileMarker%(filepath)s',
+      if (startSec != null && endSec != null) ...[
+        '--download-sections', '*$startSec-$endSec',
+      ],
+    ];
+
 List<String> buildDownloadArgs(DownloadOptions o) {
   var name = '%(title).100s';
   // 음량 조절은 yt-dlp 가 아니라 받은 뒤 ffmpeg 로 따로 한다(yt-dlp 는 이미 목표 형식이면

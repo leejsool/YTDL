@@ -66,7 +66,7 @@ void main() {
       await t.pump(const Duration(milliseconds: 200));
     }
 
-    await t.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text('편집')));
+    await t.tap(find.text('음원 편집').first);
     await t.pump(const Duration(milliseconds: 300));
     final page = t.widget<EditPage>(find.byType(EditPage));
 

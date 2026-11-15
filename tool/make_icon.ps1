@@ -2,8 +2,8 @@
 #   .\tool\make_icon.ps1  ->  assets\icon\icon.png / icon_fg.png / icon_bg.png
 # 이후 `dart run flutter_launcher_icons` 가 Android/Windows 아이콘을 만든다.
 #
-# 디자인: 붉은 그라데이션 바탕 위에 흰색 "음파 막대 + 아래 화살표 + 받침대"
-#         = 소리를 받아서 저장한다는 뜻. 유튜브 로고와 겹치지 않게 재생 버튼은 쓰지 않는다.
+# 디자인: 보라색 바탕 위에서 빨간 재생 표시가 있는 카드가 다운로드함으로 들어간다.
+$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 
 $out = Join-Path $PSScriptRoot '..\assets\icon'
@@ -37,51 +37,58 @@ function New-Canvas {
 
 function Fill-Gradient($g, $path) {
     $rect = New-Object System.Drawing.RectangleF 0, 0, $S, $S
-    $c1 = [System.Drawing.Color]::FromArgb(255, 0xF0, 0x4A, 0x45)
-    $c2 = [System.Drawing.Color]::FromArgb(255, 0xA9, 0x1B, 0x1B)
-    $br = New-Object System.Drawing.Drawing2D.LinearGradientBrush $rect, $c1, $c2, 55
-    $g.FillPath($br, $path)
-    $br.Dispose()
+    $c1 = [System.Drawing.ColorTranslator]::FromHtml('#9974FA')
+    $c2 = [System.Drawing.ColorTranslator]::FromHtml('#442B9D')
+    $brush = [System.Drawing.Drawing2D.LinearGradientBrush]::new($rect, $c1, $c2, 61.0)
+    try { $g.FillPath($brush, $path) } finally { $brush.Dispose() }
 }
 
-# 흰색 심볼. $k 는 중심(512,512) 기준 축소 배율.
-function Draw-Art($g, [float]$k) {
-    $white = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
-    $m = New-Object System.Drawing.Drawing2D.Matrix
-    $m.Translate(512, 512)
-    $m.Scale($k, $k)
-    $m.Translate(-512, -512 + 6)
-    $g.Transform = $m
+function Fill-RoundedRect($g, [string]$color, [float]$x, [float]$y, [float]$w, [float]$h, [float]$r) {
+    $path = New-RoundRectPath $x $y $w $h $r
+    $brush = [System.Drawing.SolidBrush]::new([System.Drawing.ColorTranslator]::FromHtml($color))
+    try { $g.FillPath($brush, $path) } finally { $brush.Dispose(); $path.Dispose() }
+}
 
-    # 음파 막대 7개 (높이를 불규칙하게 해서 손가락이 아니라 소리 파형처럼 보이게)
-    $heights = 130, 270, 200, 420, 260, 340, 160
-    $bw = 56; $gap = 34
-    $n = $heights.Count
-    $total = $n * $bw + ($n - 1) * $gap
-    $x0 = (1024 - $total) / 2
-    $cy = 380
-    for ($i = 0; $i -lt $n; $i++) {
-        $h = $heights[$i]
-        $p = New-RoundRectPath ($x0 + $i * ($bw + $gap)) ($cy - $h / 2) $bw $h ($bw / 2)
-        $g.FillPath($white, $p); $p.Dispose()
+function Fill-Polygon($g, [string]$color, [float[]]$coordinates) {
+    $points = for ($i = 0; $i -lt $coordinates.Length; $i += 2) {
+        [System.Drawing.PointF]::new($coordinates[$i], $coordinates[$i + 1])
     }
-    # 아래 화살표(삼각형)
-    $tri = [System.Drawing.PointF[]]@(
-        (New-Object System.Drawing.PointF 352, 646),
-        (New-Object System.Drawing.PointF 672, 646),
-        (New-Object System.Drawing.PointF 512, 790))
-    $g.FillPolygon($white, $tri)
-    # 받침대
-    $tray = New-RoundRectPath 290 836 444 56 28
-    $g.FillPath($white, $tray); $tray.Dispose()
-    $g.ResetTransform()
-    $white.Dispose()
+    $brush = [System.Drawing.SolidBrush]::new([System.Drawing.ColorTranslator]::FromHtml($color))
+    try { $g.FillPolygon($brush, [System.Drawing.PointF[]]$points) } finally { $brush.Dispose() }
+}
+
+# 100×100 좌표의 다운로드함. $scale 은 가운데를 기준으로 전경을 축소하는 배율.
+function Draw-Art($g, [float]$scale) {
+    $artState = $g.Save()
+    $unit = $S / 100
+    $g.ScaleTransform($unit, $unit)
+    $g.TranslateTransform(50, 50)
+    $g.ScaleTransform($scale, $scale)
+    $g.TranslateTransform(-50, -50)
+
+    $cardState = $g.Save()
+    $g.TranslateTransform(51, 48)
+    $g.RotateTransform(-11)
+    $g.TranslateTransform(-51, -48)
+    Fill-RoundedRect $g '#5133A6' 29 26 46 42 8
+    Fill-RoundedRect $g '#FAF6FF' 27 22 46 42 8
+    Fill-Polygon $g '#F14962' @(45, 32, 45, 52, 61, 42)
+    $g.Restore($cardState)
+
+    Fill-RoundedRect $g '#442C94' 20 59 60 25 9
+    Fill-RoundedRect $g '#CAB3FF' 19 56 62 25 9
+    Fill-Polygon $g '#E7DBFF' @(20, 61, 37, 61, 43, 68, 57, 68, 63, 61, 80, 61, 80, 73, 75, 80, 25, 80, 20, 73)
+    Fill-RoundedRect $g '#916ACE' 42.85 72.85 14.3 2.3 1.15
+    $g.Restore($artState)
 }
 
 # 1) icon.png : 둥근 사각형 바탕 + 심볼 (Windows·구형 Android 용)
 $c = New-Canvas
-$bg = New-RoundRectPath 0 0 $S $S 230
+$bg = New-RoundRectPath ($S * 0.01) ($S * 0.01) ($S * 0.98) ($S * 0.98) ($S * 0.23)
 Fill-Gradient $c.G $bg
+$rim = [System.Drawing.Pen]::new([System.Drawing.ColorTranslator]::FromHtml('#8C70E6'), [float]($S * 0.0075))
+$c.G.DrawPath($rim, $bg)
+$rim.Dispose(); $bg.Dispose()
 Draw-Art $c.G 1.0
 $c.Bmp.Save((Join-Path $out 'icon.png'), [System.Drawing.Imaging.ImageFormat]::Png)
 $c.G.Dispose(); $c.Bmp.Dispose()
@@ -90,6 +97,7 @@ $c.G.Dispose(); $c.Bmp.Dispose()
 $c = New-Canvas
 $full = New-RoundRectPath 0 0 $S $S 0
 Fill-Gradient $c.G $full
+$full.Dispose()
 $c.Bmp.Save((Join-Path $out 'icon_bg.png'), [System.Drawing.Imaging.ImageFormat]::Png)
 $c.G.Dispose(); $c.Bmp.Dispose()
 

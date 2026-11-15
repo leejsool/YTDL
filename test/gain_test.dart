@@ -32,6 +32,11 @@ void main() {
   });
 
   group('gainFilter / gainEncodeArgs', () {
+    test('측정된 LUFS를 목표 음량까지 필요한 dB로 환산한다', () {
+      expect(gainFromMeasurement('{"input_i":"-22.40"}'), closeTo(8.4, .001));
+      expect(gainFromMeasurement('{"input_i":"-10.25"}'), closeTo(-3.75, .001));
+      expect(() => gainFromMeasurement('{"input_i":"-inf"}'), throwsException);
+    });
     test('조절 없으면 null (= -c copy 를 쓴다)', () {
       expect(gainFilter(const AudioGain.none()), isNull);
       expect(gainEncodeArgs(const AudioGain.none(), 'mp3'), isNull);
@@ -130,6 +135,13 @@ void main() {
           double.parse(RegExp('$key: (-?[0-9.]+) dB').firstMatch(text)!.group(1)!);
       return (mean: pick('mean_volume'), max: pick('max_volume'));
     }
+
+    test('선택한 구간의 실제 음량으로 자동 보정값을 계산한다', () {
+      final src = makeQuiet('wav');
+      final result = Process.runSync(ffmpeg, gainMeasureArgs(src, startSec: .5, endSec: 2.5));
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      expect(gainFromMeasurement(result.stderr as String), greaterThan(0));
+    }, skip: have ? false : 'ffmpeg 없음');
 
     for (final ext in ['mp3', 'm4a', 'opus', 'flac', 'wav']) {
       test('+12dB: $ext', () {

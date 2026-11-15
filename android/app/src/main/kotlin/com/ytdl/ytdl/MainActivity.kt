@@ -14,6 +14,8 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 /**
@@ -24,6 +26,21 @@ import java.util.concurrent.Executors
  */
 class MainActivity : FlutterActivity() {
     private val executor = Executors.newCachedThreadPool()
+    private val gainProbes = ConcurrentHashMap<String, GainProbe>()
+
+    private class GainProbe {
+        @Volatile var cancelled = false
+        @Volatile var process: Process? = null
+
+        fun check() {
+            if (cancelled) throw IOException("음량 분석을 취소했습니다.")
+        }
+
+        fun cancel() {
+            cancelled = true
+            process?.destroy()
+        }
+    }
     private var events: EventChannel.EventSink? = null
     private var channel: MethodChannel? = null
     private var sharedText: String? = null
@@ -76,6 +93,19 @@ class MainActivity : FlutterActivity() {
                 req.addOption("--no-playlist")
                 req.addOption("--no-warnings")
                 YoutubeDL.execute(req).out
+            }
+
+            "measureGain" -> {
+                val id = call.argument<String>("id")!!
+                val probe = GainProbe()
+                gainProbes[id] = probe
+                async(result) {
+                    try {
+                        measureGain(call, id, probe)
+                    } finally {
+                        gainProbes.remove(id)
+                    }
+                }
             }
 
             "download" -> async(result) {
@@ -160,7 +190,9 @@ class MainActivity : FlutterActivity() {
             }
 
             "cancel" -> {
-                YoutubeDL.destroyProcessById(call.argument<String>("id")!!)
+                val id = call.argument<String>("id")!!
+                gainProbes[id]?.cancel()
+                YoutubeDL.destroyProcessById(id)
                 result.success(true)
             }
 
@@ -186,12 +218,39 @@ class MainActivity : FlutterActivity() {
         initialized = true
     }
 
+    private fun measureGain(call: MethodCall, id: String, probe: GainProbe): String {
+        ensureInit()
+        probe.check()
+        val source = call.argument<String>("source")!!
+        val downloadArgs = call.argument<List<String>>("downloadArgs")
+        val args = call.argument<List<String>>("measureArgs")!!
+        val tmp = downloadArgs?.let { Files.createTempDirectory(cacheDir.toPath(), "gain-").toFile() }
+        try {
+            val input = if (tmp != null) {
+                val req = YoutubeDLRequest(source)
+                req.addOption("-P", tmp.absolutePath)
+                req.addCommands(downloadArgs)
+                probe.check()
+                val output = YoutubeDL.execute(req, processId = id, callback = { _, _, _ ->
+                    if (probe.cancelled) YoutubeDL.destroyProcessById(id)
+                }).out
+                output.lineSequence().lastOrNull { it.startsWith("YTDL_FILE:") }
+                    ?.removePrefix("YTDL_FILE:")?.trim()
+                    ?: throw IOException("분석할 음원을 받지 못했습니다.")
+            } else source
+            probe.check()
+            return runFfmpeg(args.map { if (it == "YTDL_AUDIO_INPUT") input else it }, probe)
+        } finally {
+            tmp?.deleteRecursively()
+        }
+    }
+
     /**
      * 앱에 내장된 ffmpeg(libffmpeg.so) 를 직접 실행한다.
      * 이 실행 파일이 쓰는 공유 라이브러리가 압축 해제된 폴더(ffmpeg/python)와 앱 네이티브 폴더에 흩어져 있어
      * LD_LIBRARY_PATH 로 알려 줘야 한다(youtubedl-android 가 yt-dlp 에 해 주는 것과 같은 설정).
      */
-    private fun runFfmpeg(args: List<String>) {
+    private fun runFfmpeg(args: List<String>, probe: GainProbe? = null): String {
         val libDir = applicationInfo.nativeLibraryDir
         val pkg = File(noBackupFilesDir, "youtubedl-android/packages")
         val bin = File(libDir, "libffmpeg.so")
@@ -204,9 +263,15 @@ class MainActivity : FlutterActivity() {
             libDir,
         ).joinToString(":")
         val proc = pb.start()
-        val log = proc.inputStream.bufferedReader().readText()
+        if (probe != null) {
+            probe.process = proc
+            if (probe.cancelled) proc.destroy()
+        }
+        val log = proc.inputStream.bufferedReader().use { it.readText() }
         val code = proc.waitFor()
+        probe?.check()
         if (code != 0) throw IOException("ffmpeg 실패($code): ${log.takeLast(300).trim()}")
+        return log
     }
 
     /** 무거운 작업을 백그라운드 스레드에서 돌리고 결과를 UI 스레드로 돌려준다. */

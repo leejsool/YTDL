@@ -49,6 +49,37 @@ class AndroidBackend extends Backend {
   }
 
   @override
+  Future<double> measureGain(
+    String source,
+    CancelToken token, {
+    bool remote = false,
+    double? startSec,
+    double? endSec,
+  }) async {
+    if (token.cancelled) throw CancelledException();
+    final id = 'gain${_seq++}';
+    token.onCancel = () {
+      unawaited(_method.invokeMethod<void>('cancel', {'id': id}).catchError((Object _) {}));
+    };
+    try {
+      final log = await _method.invokeMethod<String>('measureGain', {
+        'id': id,
+        'source': source,
+        'downloadArgs': remote ? buildAudioProbeArgs(startSec: startSec, endSec: endSec) : null,
+        'measureArgs': gainMeasureArgs('YTDL_AUDIO_INPUT',
+          startSec: remote ? null : startSec, endSec: remote ? null : endSec),
+      });
+      if (token.cancelled) throw CancelledException();
+      return gainFromMeasurement(log ?? '');
+    } on PlatformException catch (e) {
+      if (token.cancelled) throw CancelledException();
+      throw Exception(e.message ?? '음량을 분석하지 못했습니다.');
+    } finally {
+      token.onCancel = null;
+    }
+  }
+
+  @override
   Future<DownloadResult> download(
     String url,
     DownloadOptions options,

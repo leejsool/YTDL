@@ -3,12 +3,34 @@ library;
 
 import '../models.dart';
 
+const gainTargetLufs = -14;
+
+List<String> gainMeasureArgs(String path, {double? startSec, double? endSec}) => [
+      '-nostdin', '-hide_banner', '-nostats',
+      if (startSec != null && endSec != null) ...[
+        '-ss', startSec.toStringAsFixed(3),
+        '-t', (endSec - startSec).toStringAsFixed(3),
+      ],
+      '-i', path, '-map', '0:a:0', '-vn', '-sn', '-dn',
+      '-af', 'loudnorm=I=$gainTargetLufs:TP=-1.5:LRA=11:print_format=json',
+      '-f', 'null', '-',
+    ];
+
+double gainFromMeasurement(String log) {
+  final match = RegExp(r'"input_i"\s*:\s*"([^"]+)"').firstMatch(log);
+  final loudness = double.tryParse(match?.group(1) ?? '');
+  if (loudness == null || !loudness.isFinite) {
+    throw Exception('선택한 구간에서 음량을 측정할 수 없습니다.');
+  }
+  return gainTargetLufs - loudness;
+}
+
 /// ffmpeg `-af` 에 넣을 필터. 조절이 없으면 null.
 String? gainFilter(AudioGain g) {
   if (!g.isActive) return null;
   if (g.mode == GainMode.auto) {
     // 유튜브가 맞추는 기준(-14 LUFS)으로. 한 번에 처리(single pass)라 빠르다.
-    return 'loudnorm=I=-14:TP=-1.5:LRA=11';
+    return 'loudnorm=I=$gainTargetLufs:TP=-1.5:LRA=11';
   }
   final v = 'volume=${g.db.toStringAsFixed(1)}dB';
   // 키울 때는 최대치를 넘는 부분이 찌그러지지(클리핑) 않게 리미터를 붙인다.

@@ -15,6 +15,15 @@ abstract class Backend {
 
   Future<MediaInfo> fetchInfo(String url);
 
+  /// 원본 음량을 측정하고 목표 음량까지 필요한 dB를 반환한다.
+  Future<double> measureGain(
+    String source,
+    CancelToken token, {
+    bool remote = false,
+    double? startSec,
+    double? endSec,
+  });
+
   Future<DownloadResult> download(
     String url,
     DownloadOptions options,
