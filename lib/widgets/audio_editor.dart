@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import '../util/names.dart';
 import '../util/time_format.dart';
 import 'gain_selector.dart';
 import 'trim_selector.dart';
+import 'range_transport_bar.dart';
 
 /// 받은 음원을 앱 안에서 들어 보고, 원본 영상 기준 어디서 어디까지인지 확인하고,
 /// 더 자를 구간을 골라 새 파일로 저장하는 카드.
@@ -63,6 +65,13 @@ class _AudioEditorState extends State<AudioEditor> {
   String? _saveError;
   AudioGain _gain = const AudioGain.none();
 
+  // 음량 바로 듣기: 재생 중에 음량을 바꾸면 음량이 적용된 소리로 바꿔서 이어 들려 준다.
+  Timer? _gainTimer;
+  int _gainGen = 0;
+  double _loadedDb = 0; // 지금 플레이어에 올라가 있는 소리의 음량 조절값(dB)
+  bool _gainRendering = false;
+  String? _gainError;
+
   SavedAudio get _a => widget.audio;
   int get _minSpan => _durMs < _minSelMs ? _durMs : _minSelMs;
 
@@ -99,6 +108,7 @@ class _AudioEditorState extends State<AudioEditor> {
 
   @override
   void dispose() {
+    _gainTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -194,21 +204,78 @@ class _AudioEditorState extends State<AudioEditor> {
   }
 
   // ------------------------------------------------------------------ 재생
-  Future<void> _togglePlay() async {
-    _stopAtMs = null;
-    if (_playing) {
-      await _player.pause();
+
+  void _onGainChanged(AudioGain g) {
+    setState(() {
+      _gain = g;
+      _saveError = null;
+      _gainError = null;
+    });
+    final db = g.isActive ? g.db : 0.0;
+    // 줄일 때는 바로 들리게 플레이어 볼륨부터 낮춘다(키우는 건 플레이어가 100%가 한계라 새로 만들어 듣는다).
+    final rel = db - _loadedDb;
+    unawaited(
+      _player.setVolume(rel < 0 ? math.pow(10, rel / 20).toDouble() : 1.0),
+    );
+    _gainTimer?.cancel();
+    _gainTimer = Timer(const Duration(milliseconds: 350), _applyLiveGain);
+  }
+
+  /// 파일 전체에 지금 고른 음량을 입힌 소리를 만들어, 듣던 위치 그대로 바꿔 끼운다.
+  Future<void> _applyLiveGain() async {
+    final gain = _gain;
+    final db = gain.isActive ? gain.db : 0.0;
+    if (db == _loadedDb) {
+      await _player.setVolume(1);
       return;
     }
-    // 끝까지 들었거나 끝에 있으면 처음부터
-    if (_posMs >= _durMs - 50) await _seek(0);
-    await _player.resume();
+    final gen = ++_gainGen;
+    setState(() => _gainRendering = true);
+    try {
+      final path = gain.isActive
+          ? await widget.backend.previewGain(
+              _a.path,
+              gain,
+              // 압축 없는 wav 가 10배쯤 빠르다. 너무 긴 파일(15분 초과)만 용량 때문에 m4a.
+              ext: _durMs <= 15 * 60 * 1000 ? 'wav' : 'm4a',
+            )
+          : _a.path;
+      if (!mounted || gen != _gainGen) return;
+      final wasPlaying = _playing;
+      final pos = _posMs;
+      await _player.setSource(DeviceFileSource(path));
+      await _player.setVolume(1);
+      await _player.seek(Duration(milliseconds: pos));
+      _loadedDb = db;
+      if (wasPlaying && mounted) await _player.resume();
+    } catch (e) {
+      if (mounted && gen == _gainGen) {
+        setState(
+          () => _gainError =
+              '음량을 적용한 소리를 만들지 못했어요: ${e.toString().replaceFirst('Exception: ', '')}',
+        );
+      }
+    } finally {
+      if (mounted && gen == _gainGen) setState(() => _gainRendering = false);
+    }
   }
 
   Future<void> _seek(int ms) async {
     ms = ms.clamp(0, _durMs);
     await _player.seek(Duration(milliseconds: ms));
     if (mounted) setState(() => _posMs = ms);
+  }
+
+  /// 가운데 재생 버튼: 재생 중이면 멈춘다. 아니면 선택 구간을 듣는다
+  /// (재생 위치가 구간 안이면 거기서부터 구간 끝까지, 밖이면 구간 처음부터).
+  Future<void> _playSelection() async {
+    if (_playing) {
+      _stopAtMs = null;
+      await _player.pause();
+      return;
+    }
+    final inside = _posMs >= _selStart && _posMs < _selEnd - 50;
+    await _playRange(inside ? _posMs : _selStart, _selEnd);
   }
 
   /// [fromMs]~[toMs] 만 재생하고 자동으로 멈춘다.
@@ -384,23 +451,6 @@ class _AudioEditorState extends State<AudioEditor> {
           children: [
             Row(
               children: [
-                DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: colors.outlineVariant),
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [colors.surface, colors.surfaceContainerHighest],
-                    ),
-                  ),
-                  child: IconButton(
-                    tooltip: _playing ? '일시정지' : '재생',
-                    color: colors.primary,
-                    onPressed: _saving ? null : _togglePlay,
-                    icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
-                  ),
-                ),
                 Expanded(
                   child: Slider(
                     max: _durMs.toDouble(),
@@ -424,6 +474,24 @@ class _AudioEditorState extends State<AudioEditor> {
               '${_a.sourceLabel == null ? '' : '   ·   ${_a.sourceLabel} 기준 ${_src(posSrc)}'}',
               style: small,
             ),
+            const SizedBox(height: 10),
+            RangeTransportBar(
+              enabled: !_saving,
+              playing: _playing,
+              onSetStart: () => _setSel(_posMs, _selEnd),
+              onPlayStartPart: () => _playRange(
+                _selStart,
+                (_selStart + _peekMs).clamp(0, _selEnd),
+              ),
+              onPlayPause: _playSelection,
+              onPlayEndPart: () => _playRange(
+                (_selEnd - _peekMs).clamp(_selStart, _selEnd),
+                _selEnd,
+              ),
+              onSetEnd: () => _setSel(_selStart, _posMs),
+            ),
+            const SizedBox(height: 4),
+            Text('맨 왼쪽 버튼은 지금 위치를 시작으로, 맨 오른쪽 버튼은 끝으로 잡아요.', style: small),
           ],
         ),
       ),
@@ -454,78 +522,20 @@ class _AudioEditorState extends State<AudioEditor> {
                 _timeField('끝', _endCtl),
               ],
             ),
-            CutRangeSlider(
-              max: _durMs.toDouble(),
-              values: RangeValues(_selStart.toDouble(), _selEnd.toDouble()),
+            ZoomRangeSlider(
+              total: _durMs.toDouble(),
+              start: _selStart.toDouble(),
+              end: _selEnd.toDouble(),
+              enabled: !_saving,
+              minViewSpan: 10000,
+              minSelection: _minSpan.toDouble(),
               format: (t) => formatMs(t.round()),
-              onChanged: _saving
-                  ? null
-                  : (v) {
-                      var start = v.start.round();
-                      var end = v.end.round();
-                      if (end - start < _minSpan) {
-                        if (start != _selStart) {
-                          start = end - _minSpan;
-                        } else {
-                          end = start + _minSpan;
-                        }
-                      }
-                      _setSel(start, end);
-                    },
+              caption:
+                  '선택 길이 ${formatMs(_selEnd - _selStart)}  (전체 ${formatMs(_durMs)})',
+              onChanged: (s, e) => _setSel(s.round(), e.round()),
             ),
           ],
         ),
-      ),
-      const SizedBox(height: 8),
-      Wrap(
-        spacing: 8,
-        runSpacing: 4,
-        children: [
-          OutlinedButton.icon(
-            onPressed: _saving ? null : () => _setSel(_posMs, _selEnd),
-            icon: const Icon(Icons.first_page),
-            label: const Text('여기부터'),
-          ),
-          OutlinedButton.icon(
-            onPressed: _saving ? null : () => _setSel(_selStart, _posMs),
-            icon: const Icon(Icons.last_page),
-            label: const Text('여기까지'),
-          ),
-        ],
-      ),
-      const SizedBox(height: 4),
-      Text('재생하다가 멈춘 위치를 "여기부터 / 여기까지"로 잡을 수 있어요.', style: small),
-      const SizedBox(height: 12),
-      Wrap(
-        spacing: 8,
-        runSpacing: 4,
-        children: [
-          FilledButton.tonalIcon(
-            onPressed: _saving ? null : () => _playRange(_selStart, _selEnd),
-            icon: const Icon(Icons.play_circle_outline),
-            label: const Text('선택 구간 듣기'),
-          ),
-          FilledButton.tonalIcon(
-            onPressed: _saving
-                ? null
-                : () => _playRange(
-                    _selStart,
-                    (_selStart + _peekMs).clamp(0, _selEnd),
-                  ),
-            icon: const Icon(Icons.skip_previous),
-            label: const Text('시작 부분'),
-          ),
-          FilledButton.tonalIcon(
-            onPressed: _saving
-                ? null
-                : () => _playRange(
-                    (_selEnd - _peekMs).clamp(_selStart, _selEnd),
-                    _selEnd,
-                  ),
-            icon: const Icon(Icons.skip_next),
-            label: const Text('끝 부분'),
-          ),
-        ],
       ),
       const SizedBox(height: 16),
       Text(
@@ -541,6 +551,15 @@ class _AudioEditorState extends State<AudioEditor> {
       GainSelector(
         value: _gain,
         enabled: !_saving,
+        // 선택 구간(최대 15초)에 지금 고른 음량을 입혀서 들려 준다.
+        onPreview: () => widget.backend.previewGain(
+          _a.path,
+          _gain,
+          startSec: _selStart / 1000,
+          endSec:
+              (_selEnd - _selStart > 15000 ? _selStart + 15000 : _selEnd) /
+              1000,
+        ),
         analysisSource: (_a.path, _selStart, _selEnd),
         onAuto: (token) => widget.backend.measureGain(
           _a.path,
@@ -548,14 +567,22 @@ class _AudioEditorState extends State<AudioEditor> {
           startSec: _selStart / 1000,
           endSec: _selEnd / 1000,
         ),
-        onChanged: (g) => setState(() {
-          _gain = g;
-          _saveError = null;
-        }),
+        onChanged: _onGainChanged,
+        busy: _gainRendering,
       ),
+      if (_gainRendering || _gainError != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            _gainError ?? '음량을 적용하는 중… 잠깐 뒤 바뀐 소리로 이어서 들려요.',
+            style: small?.copyWith(
+              color: _gainError != null ? theme.colorScheme.error : null,
+            ),
+          ),
+        ),
       const SizedBox(height: 4),
       Text(
-        '미리듣기는 파일 그대로의 소리예요. 음량은 저장한 새 파일을 열어서 확인해 보세요(원본은 그대로 남아요).',
+        '위쪽 미리듣기는 파일 그대로의 소리예요. 재생 중에 음량을 바꾸면 바뀐 음량으로 바로 이어서 들려요(원본은 그대로 남아요).',
         style: small,
       ),
       const SizedBox(height: 12),

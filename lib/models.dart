@@ -78,7 +78,7 @@ class MediaInfo {
     final duration = (j['duration'] as num?)?.round() ?? 0;
     return MediaInfo(
       storyboard: Storyboard.fromFormats(rawFormats, duration),
-      previewAudioUrl: pickPreviewAudioUrl(rawFormats),
+      previewAudioUrl: pickPreviewAudioUrl(rawFormats, j['requested_formats'] as List?),
       id: (j['id'] ?? '').toString(),
       title: (j['title'] ?? '(제목 없음)').toString(),
       uploader: (j['uploader'] ?? j['channel'] ?? '').toString(),

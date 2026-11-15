@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import '../backend/backend.dart';
 import '../state/app_state.dart';
 import 'edit_page.dart';
+import '../state/settings.dart';
 import 'home_page.dart';
+import 'options_page.dart';
+import 'video_edit_page.dart';
 
 /// 화면 폭에 맞춰 메뉴를 배치하고 두 탭의 상태를 유지한다.
 class AppShell extends StatefulWidget {
@@ -17,22 +20,33 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   final RecentStore _recent = RecentStore();
+  final RecentStore _videoRecent = RecentStore(key: 'recentVideo');
+  final AppSettings _settings = AppSettings();
   final EditController _edit = EditController();
+  final EditController _videoEdit = EditController();
   int _index = 0;
   int _seenRequests = 0;
+  int _seenVideoRequests = 0;
 
   @override
   void initState() {
     super.initState();
     _recent.load();
+    _videoRecent.load();
+    _settings.load();
     _edit.addListener(_onEdit);
+    _videoEdit.addListener(_onVideoEdit);
   }
 
   @override
   void dispose() {
     _edit.removeListener(_onEdit);
+    _videoEdit.removeListener(_onVideoEdit);
     _edit.dispose();
+    _videoEdit.dispose();
     _recent.dispose();
+    _videoRecent.dispose();
+    _settings.dispose();
     super.dispose();
   }
 
@@ -41,6 +55,14 @@ class _AppShellState extends State<AppShell> {
     if (_edit.openRequests != _seenRequests) {
       _seenRequests = _edit.openRequests;
       if (mounted) setState(() => _index = 1);
+    }
+  }
+
+  /// 다운로드 탭의 "영상 편집" 버튼이 파일을 넘기면 영상 편집 탭으로 이동한다.
+  void _onVideoEdit() {
+    if (_videoEdit.openRequests != _seenVideoRequests) {
+      _seenVideoRequests = _videoEdit.openRequests;
+      if (mounted) setState(() => _index = 2);
     }
   }
 
@@ -55,6 +77,9 @@ class _AppShellState extends State<AppShell> {
           backend: widget.backend,
           recent: _recent,
           editController: _edit,
+          videoController: _videoEdit,
+          videoRecent: _videoRecent,
+          settings: _settings,
         ),
         EditPage(
           backend: widget.backend,
@@ -62,11 +87,29 @@ class _AppShellState extends State<AppShell> {
           recent: _recent,
           active: _index == 1,
         ),
+        VideoEditPage(
+          backend: widget.backend,
+          controller: _videoEdit,
+          recent: _videoRecent,
+          settings: _settings,
+          active: _index == 2,
+        ),
+        // 탭에 들어올 때마다 새로 그려서 저장 위치 같은 값이 최신으로 보이게 한다.
+        OptionsPage(
+          key: ValueKey(_index == 3),
+          backend: widget.backend,
+          settings: _settings,
+        ),
       ],
     );
     const destinations = [
       NavigationDestination(icon: Icon(Icons.download_outlined), label: '다운로드'),
       NavigationDestination(icon: Icon(Icons.content_cut), label: '음원 편집'),
+      NavigationDestination(
+        icon: Icon(Icons.movie_creation_outlined),
+        label: '영상 편집',
+      ),
+      NavigationDestination(icon: Icon(Icons.settings_outlined), label: '옵션'),
     ];
     return Scaffold(
       body: SafeArea(

@@ -8,6 +8,7 @@ import '../models.dart';
 import '../state/app_state.dart';
 import '../util/names.dart';
 import '../widgets/audio_editor.dart';
+import '../widgets/pill_button.dart';
 
 /// 편집 탭: 컴퓨터/폰에 있는 아무 음원이나, 방금 받은 음원을 열어 듣고 구간을 잘라 새 파일로 저장한다.
 class EditPage extends StatefulWidget {
@@ -169,7 +170,7 @@ class _EditPageState extends State<EditPage> {
     );
   }
 
-  Widget _openButton() => FilledButton.tonalIcon(
+  Widget _openButton() => PillButton(
     onPressed: _picking ? null : _pick,
     icon: const Icon(Icons.folder_open, size: 18),
     label: Text(_picking ? '여는 중…' : '음원 파일 선택'),
@@ -234,7 +235,7 @@ class _EditPageState extends State<EditPage> {
             const SizedBox(height: 8),
             Text(
               Platform.isAndroid
-                  ? '새 파일은 Music/YTDL에 저장됩니다.'
+                  ? '새 파일은 Music/${widget.backend.folderName}에 저장됩니다.'
                   : '새 파일은 원본 파일과 같은 폴더에 저장됩니다.',
               style: theme.textTheme.bodyMedium,
             ),

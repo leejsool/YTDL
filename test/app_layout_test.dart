@@ -63,6 +63,7 @@ void main() {
     testWidgets(
       '${wide ? 'wide' : 'mobile'} layout loads the media, range and gain controls',
       (tester) async {
+        final semantics = tester.ensureSemantics();
         SharedPreferences.setMockInitialValues({});
         tester.view.devicePixelRatio = 1;
         tester.view.physicalSize = wide
@@ -80,7 +81,7 @@ void main() {
         );
         expect(find.text('저장할 영상 링크를 입력하세요'), findsOneWidget);
         await tester.enterText(find.byType(TextField), 'https://youtu.be/demo');
-        await tester.tap(find.text('조회'));
+        await tester.tap(find.byTooltip('조회'));
         await tester.pumpAndSettle();
         final title = tester.getRect(find.text('영상 제목'));
         final options = tester.getRect(find.text('저장 옵션'));
@@ -89,7 +90,7 @@ void main() {
           isTrue,
         );
 
-        final trim = find.text('필요한 구간만 잘라서 저장');
+        final trim = find.text('구간 자르기');
         await tester.ensureVisible(trim);
         await tester.tap(trim);
         await tester.pumpAndSettle();
@@ -102,6 +103,10 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('잘라낼 길이 0:24  (전체 1:22)'), findsOneWidget);
 
+        // 음량 조절은 기본으로 접혀 있으니 펼친다.
+        await tester.ensureVisible(find.text('음량 조절'));
+        await tester.tap(find.text('음량 조절'));
+        await tester.pumpAndSettle();
         final gain = find.byType(GainSelector);
         await tester.ensureVisible(gain);
         expect(
@@ -118,6 +123,7 @@ void main() {
           findsOneWidget,
         );
         expect(tester.takeException(), isNull);
+        semantics.dispose();
       },
     );
   }

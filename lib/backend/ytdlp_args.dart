@@ -12,13 +12,50 @@ const String fileMarker = 'YTDL_FILE:';
 const String gainMarker = 'YTDL_GAIN';
 
 List<String> buildAudioProbeArgs({double? startSec, double? endSec}) => [
-      '--no-playlist', '--no-progress', '--no-warnings',
-      '-f', 'bestaudio/best', '-o', 'probe.%(ext)s',
-      '--print', 'after_move:$fileMarker%(filepath)s',
-      if (startSec != null && endSec != null) ...[
-        '--download-sections', '*$startSec-$endSec',
-      ],
-    ];
+  '--no-playlist',
+  '--no-progress',
+  '--no-warnings',
+  '-f',
+  'bestaudio/best',
+  '-o',
+  'probe.%(ext)s',
+  '--print',
+  'after_move:$fileMarker%(filepath)s',
+  if (startSec != null && endSec != null) ...[
+    '--download-sections',
+    '*$startSec-$endSec',
+  ],
+];
+
+/// 미리듣기용: [startSec]~[endSec] 부분의 소리만 받는다(어느 폰에서나 재생되는 m4a 우선).
+List<String> buildPreviewSegmentArgs(double startSec, double endSec) => [
+  '--no-playlist',
+  '--no-progress',
+  '--no-warnings',
+  '--force-overwrites',
+  '-f',
+  'bestaudio[ext=m4a]/bestaudio/best',
+  '-o',
+  'preview.%(ext)s',
+  '--print',
+  'after_move:$fileMarker%(filepath)s',
+  '--download-sections',
+  '*$startSec-$endSec',
+];
+
+/// 미리듣기용: 구간 없이 소리 전체를 받는다(구간만 받기가 안 될 때의 대비책).
+List<String> buildPreviewFullArgs() => [
+  '--no-playlist',
+  '--no-progress',
+  '--no-warnings',
+  '--force-overwrites',
+  '-f',
+  'bestaudio[ext=m4a]/bestaudio/best',
+  '-o',
+  'preview.%(ext)s',
+  '--print',
+  'after_move:$fileMarker%(filepath)s',
+];
 
 List<String> buildDownloadArgs(DownloadOptions o) {
   var name = '%(title).100s';
@@ -45,26 +82,28 @@ List<String> buildDownloadArgs(DownloadOptions o) {
 
   if (o.kind == MediaKind.audio) {
     args.addAll([
-      '-f', 'bestaudio/best',
+      '-f',
+      'bestaudio/best',
       '-x',
-      '--audio-format', o.audioFormat,
-      '--audio-quality', '0',
+      '--audio-format',
+      o.audioFormat,
+      '--audio-quality',
+      '0',
     ]);
   } else {
     final h = o.maxHeight;
     // 해상도를 먼저 맞추고, 같은 해상도면 H.264 + AAC(m4a)를 우선해서
     // 어느 플레이어에서든 재생되는 mp4로 합친다.
-    final sort = h == null ? 'res,vcodec:h264,acodec:m4a' : 'res:$h,vcodec:h264,acodec:m4a';
-    args.addAll([
-      '-f', 'bv*+ba/b',
-      '-S', sort,
-      '--merge-output-format', 'mp4',
-    ]);
+    final sort = h == null
+        ? 'res,vcodec:h264,acodec:m4a'
+        : 'res:$h,vcodec:h264,acodec:m4a';
+    args.addAll(['-f', 'bv*+ba/b', '-S', sort, '--merge-output-format', 'mp4']);
   }
 
   if (o.hasTrim) {
     args.addAll([
-      '--download-sections', '*${o.trimStart}-${o.trimEnd}',
+      '--download-sections',
+      '*${o.trimStart}-${o.trimEnd}',
       '--force-keyframes-at-cuts',
     ]);
   }

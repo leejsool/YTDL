@@ -1,16 +1,23 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../backend/backend.dart';
 import '../models.dart';
 import '../util/names.dart';
+import '../util/oembed.dart';
+import '../util/preview_renderer.dart';
 import '../state/app_state.dart';
+import '../state/settings.dart';
 import '../util/size_estimate.dart';
 import '../util/time_format.dart';
 import '../util/youtube_url.dart';
 import '../widgets/gain_selector.dart';
+import '../widgets/loading_stripes.dart';
 import '../widgets/range_preview.dart';
 import '../widgets/trim_selector.dart';
+import '../widgets/pill_button.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({
@@ -18,6 +25,9 @@ class HomePage extends StatefulWidget {
     required this.backend,
     required this.recent,
     required this.editController,
+    required this.videoController,
+    required this.videoRecent,
+    required this.settings,
   });
 
   final Backend backend;
@@ -26,12 +36,20 @@ class HomePage extends StatefulWidget {
   final RecentStore recent;
   final EditController editController;
 
+  /// 받은 영상을 영상 편집 탭에 넘기는 데 쓴다.
+  final EditController videoController;
+  final RecentStore videoRecent;
+
+  /// 옵션 탭의 기본값(음원 형식, 영상 화질).
+  final AppSettings settings;
+
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
   Backend get _b => widget.backend;
+  late final PreviewRenderer _preview = PreviewRenderer(_b);
   final _urlCtl = TextEditingController();
 
   // 엔진 준비
@@ -43,13 +61,18 @@ class _HomePageState extends State<HomePage> {
   // 영상 정보
   MediaInfo? _info;
   bool _fetching = false;
+  String _fetchUrl = '';
+  int _fetchGen = 0; // 조회 중에 새 주소를 넣으면 이전 조회 결과는 버리기 위한 번호
+  // 조회가 끝나기 전에 먼저 보여 주는 간단 정보(제목·채널·썸네일), 그리고 최근 조회 결과 캐시.
+  MediaInfo? _quick;
+  final Map<String, (MediaInfo, DateTime)> _infoCache = {};
   String? _fetchError;
 
   // 옵션
   MediaKind _kind = MediaKind.audio;
-  String _audioFormat = 'mp3';
+  late String _audioFormat = widget.settings.audioFormat;
   AudioGain _gain = const AudioGain.none();
-  int? _maxHeight = 1080;
+  late int? _maxHeight = widget.settings.maxHeight;
   bool _trimOn = false;
   int _trimStart = 0;
   int _trimEnd = 0;
@@ -63,6 +86,7 @@ class _HomePageState extends State<HomePage> {
 
   // 방금 받은 음원(편집 탭으로 넘길 수 있다)
   SavedAudio? _saved;
+  SavedAudio? _savedVideo;
 
   static final _urlRe = RegExp(r'https?://[^\s]+');
 
@@ -70,13 +94,24 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _b.onSharedText = _acceptUrl;
+    widget.settings.addListener(_onSettings);
     _setup();
   }
 
   @override
   void dispose() {
+    widget.settings.removeListener(_onSettings);
     _urlCtl.dispose();
     super.dispose();
+  }
+
+  /// 옵션 탭에서 기본값을 바꾸면 지금 선택에도 바로 반영한다.
+  void _onSettings() {
+    if (!mounted || _downloading) return;
+    setState(() {
+      _audioFormat = widget.settings.audioFormat;
+      _maxHeight = widget.settings.maxHeight;
+    });
   }
 
   Future<void> _setup() async {
@@ -130,42 +165,103 @@ class _HomePageState extends State<HomePage> {
     _fetch();
   }
 
+  /// 주소칸을 비운다. 조회 중이었다면 그 조회도 멈추고 임시로 보이던 카드를 치운다.
+  void _clearUrl() {
+    _urlCtl.clear();
+    if (_fetching) {
+      _fetchGen++;
+      setState(() {
+        _fetching = false;
+        _quick = null;
+        _fetchError = null;
+      });
+    }
+  }
+
   Future<void> _paste() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null) _acceptUrl(data!.text!);
   }
 
   Future<void> _fetch() async {
-    if (!_ready || _fetching || _downloading) return;
+    if (!_ready || _downloading) return;
     final raw = _urlCtl.text.trim();
     final url = _urlRe.firstMatch(raw)?.group(0);
+    final gen = ++_fetchGen;
     if (url == null) {
-      setState(() => _fetchError = '올바른 링크(https://…)를 입력해 주세요.');
+      setState(() {
+        _fetching = false;
+        _quick = null;
+        _fetchError = '올바른 링크(https://…)를 입력해 주세요.';
+      });
       return;
     }
     FocusManager.instance.primaryFocus?.unfocus();
+    // 최근 30분 안에 조회한 영상이면 바로 보여 준다(소리 주소는 몇 시간 동안 유효).
+    final cached = _infoCache[url];
+    if (cached != null && DateTime.now().difference(cached.$2).inMinutes < 30) {
+      setState(() {
+        _fetchError = null;
+        _result = null;
+        _dlError = null;
+        _saved = null;
+        _savedVideo = null;
+        _fetching = false;
+        _quick = null;
+        _info = cached.$1;
+        _trimStart = 0;
+        _trimEnd = cached.$1.durationSeconds;
+        _trimOn = false;
+        _gain = const AudioGain.none();
+      });
+      return;
+    }
     setState(() {
       _fetching = true;
+      _fetchUrl = url;
+      _trimOn = false;
       _fetchError = null;
+      _quick = quickInfoFromId(url); // 썸네일은 영상 ID 만으로 바로 띄운다
       _info = null;
       _result = null;
       _dlError = null;
       _saved = null;
+      _savedVideo = null;
     });
+    // 전체 조회(수 초)와 동시에 제목·썸네일만 먼저 가져와 보여 준다.
+    unawaited(
+      fetchQuickInfo(url).then((q) {
+        if (q != null && mounted && gen == _fetchGen && _info == null) {
+          setState(() => _quick = q);
+        }
+      }),
+    );
     try {
       final info = await _b.fetchInfo(url);
       if (!mounted) return;
+      _infoCache[url] = (info, DateTime.now());
+      if (gen != _fetchGen) return; // 그 사이 다른 주소를 넣었다
+      _infoCache[url] = (info, DateTime.now());
       setState(() {
+        _quick = null;
         _info = info;
         _trimStart = 0;
         _trimEnd = info.durationSeconds;
-        _trimOn = false;
         _gain = const AudioGain.none();
       });
+      // 조회 중에 미리 펼쳐 둔 구간 자르기가 있으면 이제 소리를 미리 받아 둔다.
+      if (_trimOn && info.durationSeconds <= 1800) {
+        unawaited(_preview.prefetch(info.url, audioUrl: info.previewAudioUrl));
+      }
     } catch (e) {
-      if (mounted) setState(() => _fetchError = _msg(e));
+      if (mounted && gen == _fetchGen) setState(() => _fetchError = _msg(e));
     } finally {
-      if (mounted) setState(() => _fetching = false);
+      if (mounted && gen == _fetchGen) {
+        setState(() {
+          _fetching = false;
+          _quick = null;
+        });
+      }
     }
   }
 
@@ -181,6 +277,7 @@ class _HomePageState extends State<HomePage> {
       _result = null;
       _dlError = null;
       _saved = null;
+      _savedVideo = null;
     });
     try {
       final options = DownloadOptions(
@@ -209,8 +306,20 @@ class _HomePageState extends State<HomePage> {
             sourceLabel: '원본 영상',
           );
         }
+        // 영상이면 영상 편집 탭에서 열 수 있게 준비한다.
+        if (_kind == MediaKind.video && path != null) {
+          _savedVideo = SavedAudio(
+            title: stripCut(baseNameOf(path)),
+            path: path,
+            location: r.location,
+            srcStart: (options.trimStart ?? 0).toDouble(),
+            srcEnd: (options.trimEnd ?? info.durationSeconds).toDouble(),
+            sourceLabel: '원본 영상',
+          );
+        }
       });
       if (_saved != null) widget.recent.add(_saved!);
+      if (_savedVideo != null) widget.videoRecent.add(_savedVideo!);
     } on CancelledException {
       if (mounted) setState(() => _dlError = '취소했습니다.');
     } catch (e) {
@@ -323,7 +432,7 @@ class _HomePageState extends State<HomePage> {
         if (_ready) ...[
           const SizedBox(width: 8),
           if (wide)
-            OutlinedButton.icon(
+            PillButton(
               onPressed: _downloading ? null : _updateEngine,
               icon: const Icon(Icons.refresh, size: 16),
               label: const Text('엔진 업데이트 확인'),
@@ -372,6 +481,20 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildMain(bool wide) {
     final info = _info;
+    // 조회 중에도 화면 구성을 미리 보여 준다(흐리게, 누를 수 없게). 아직 모르는 값은 ?? 로 표시한다.
+    final loading = info == null && _fetching;
+    final shown =
+        info ??
+        (loading
+            ? (_quick ??
+                  MediaInfo(
+                    id: '',
+                    title: '정보를 불러오는 중…',
+                    uploader: '',
+                    url: _fetchUrl,
+                    durationSeconds: 0,
+                  ))
+            : null);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -382,21 +505,24 @@ class _HomePageState extends State<HomePage> {
             padding: EdgeInsets.only(top: 16),
             child: LinearProgressIndicator(),
           ),
-        if (info != null) ...[
+        if (shown != null) ...[
           const SizedBox(height: 16),
           if (wide)
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(flex: 9, child: _buildInfoCard(info, wide)),
+                Expanded(flex: 9, child: _buildInfoCard(shown, wide, loading: loading)),
                 const SizedBox(width: 16),
-                Expanded(flex: 11, child: _buildOptions(info)),
+                Expanded(
+                  flex: 11,
+                  child: _buildOptions(shown, loading: loading),
+                ),
               ],
             )
           else ...[
-            _buildInfoCard(info, wide),
+            _buildInfoCard(shown, wide, loading: loading),
             const SizedBox(height: 12),
-            _buildOptions(info),
+            _buildOptions(shown, loading: loading),
           ],
         ],
         if (info == null && !_fetching)
@@ -437,6 +563,27 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// 주소칸 안에 나란히 붙일 작은 아이콘 버튼(기본 아이콘 버튼은 최소 48 크기라 서로 멀어 보인다).
+  Widget _smallIconButton(IconData icon, String tooltip, VoidCallback? onTap) {
+    final colors = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: InkResponse(
+        onTap: onTap,
+        radius: 18,
+        child: SizedBox(
+          width: 30,
+          height: 36,
+          child: Icon(
+            icon,
+            size: 20,
+            color: onTap == null ? colors.outline : colors.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildUrlRow() {
     final theme = Theme.of(context);
     return Column(
@@ -449,31 +596,69 @@ class _HomePageState extends State<HomePage> {
             Expanded(
               child: TextField(
                 controller: _urlCtl,
-                enabled: !_downloading && !_fetching,
+                enabled: !_downloading,
                 keyboardType: TextInputType.url,
                 textInputAction: TextInputAction.go,
                 decoration: InputDecoration(
-                  hintText: 'https://youtu.be/…',
-                  prefixIcon: const Icon(Icons.link, size: 20),
+                  // 안내 문구는 글자를 한 자라도 치면 사라진다. 링크 아이콘도 안내 문구의 일부로 같이 사라진다.
+                  hint: Row(
+                    children: [
+                      Icon(
+                        Icons.link,
+                        size: 20,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '여기에 유튜브 주소를 입력하세요',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant
+                                .withValues(alpha: .7),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                   isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 14),
-                  suffixIcon: IconButton(
-                    tooltip: '붙여넣기',
-                    icon: const Icon(Icons.content_paste),
-                    onPressed: _downloading ? null : _paste,
+                  contentPadding: const EdgeInsets.fromLTRB(14, 14, 4, 14),
+                  suffixIconConstraints: const BoxConstraints(
+                    minWidth: 0,
+                    minHeight: 0,
+                  ),
+                  suffixIcon: ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _urlCtl,
+                    builder: (context, value, _) => Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (value.text.isNotEmpty)
+                            _smallIconButton(
+                              Icons.close,
+                              '주소 모두 지우기',
+                              _downloading ? null : _clearUrl,
+                            ),
+                          _smallIconButton(
+                            Icons.content_paste,
+                            '붙여넣기',
+                            _downloading ? null : _paste,
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 onSubmitted: (_) => _fetch(),
               ),
             ),
             const SizedBox(width: 8),
-            FilledButton.tonalIcon(
-              onPressed: (_fetching || _downloading) ? null : _fetch,
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 11),
-              ),
-              icon: const Icon(Icons.search, size: 17),
-              label: const Text('조회'),
+            PillButton(
+              onPressed: _downloading ? null : _fetch,
+              tooltip: '조회',
+              icon: const Icon(Icons.search, size: 20),
             ),
           ],
         ),
@@ -481,10 +666,12 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildInfoCard(MediaInfo info, bool wide) {
+  Widget _buildInfoCard(MediaInfo info, bool wide, {bool loading = false}) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    final placeholder = ColoredBox(
+    // 그림이 아직 없거나 오는 중일 때는 검은색 · 회색 사선 무늬(로딩 중 표시).
+    const stripes = LoadingStripes();
+    final failed = ColoredBox(
       color: colors.surfaceContainerHighest,
       child: Icon(Icons.movie_outlined, color: colors.primary),
     );
@@ -494,12 +681,14 @@ class _HomePageState extends State<HomePage> {
         fit: StackFit.expand,
         children: [
           if (info.thumbnail == null)
-            placeholder
+            (loading ? stripes : failed)
           else
             Image.network(
               info.thumbnail!,
               fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => placeholder,
+              loadingBuilder: (context, child, progress) =>
+                  progress == null ? child : stripes,
+              errorBuilder: (_, _, _) => failed,
             ),
           if (info.durationSeconds > 0)
             Positioned(
@@ -582,19 +771,25 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildOptions(MediaInfo info) {
+  Widget _buildOptions(MediaInfo info, {bool loading = false}) {
     final busy = _downloading;
     final canTrim = info.durationSeconds > 1;
     final trimmed = _trimOn && canTrim;
     final fraction = _selectedFraction(info);
-    String? size(int? bytes) =>
-        bytes == null ? null : '약 ${formatBytes(bytes)}';
+    String? size(int? bytes) => loading
+        ? '약 ??'
+        : bytes == null
+        ? null
+        : '약 ${formatBytes(bytes)}';
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final sectionDivider = Border(
       top: BorderSide(color: colors.outlineVariant),
     );
-    return Card(
+    // 조회 중에는 값이 필요한 조작부만 흐리게 하고 누를 수 없게 한다(펼치기 줄은 눌러도 된다).
+    Widget dim(Widget w) =>
+        loading ? IgnorePointer(child: Opacity(opacity: .45, child: w)) : w;
+    final card = Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(13, 13, 13, 2),
         child: Column(
@@ -610,98 +805,122 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                 ),
-                Text(
-                  _kind == MediaKind.audio ? '예상 용량' : 'MP4 · 예상 용량',
-                  style: theme.textTheme.labelSmall,
-                ),
               ],
             ),
             const SizedBox(height: 10),
-            SegmentedButton<MediaKind>(
-              showSelectedIcon: false,
-              style: SegmentedButton.styleFrom(
-                backgroundColor: colors.surfaceContainerHighest,
-                selectedBackgroundColor: colors.secondaryContainer,
-                selectedForegroundColor: colors.primary,
-                side: BorderSide(color: colors.outlineVariant),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+            dim(
+              SegmentedButton<MediaKind>(
+                showSelectedIcon: false,
+                style: SegmentedButton.styleFrom(
+                  backgroundColor: colors.surfaceContainerHighest,
+                  selectedBackgroundColor: colors.secondaryContainer,
+                  selectedForegroundColor: colors.primary,
+                  side: BorderSide(color: colors.outlineVariant),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
+                segments: const [
+                  ButtonSegment(
+                    value: MediaKind.audio,
+                    icon: Icon(Icons.headphones, size: 17),
+                    label: Text('음원'),
+                  ),
+                  ButtonSegment(
+                    value: MediaKind.video,
+                    icon: Icon(Icons.movie_outlined, size: 17),
+                    label: Text('영상'),
+                  ),
+                ],
+                selected: {_kind},
+                onSelectionChanged: busy
+                    ? null
+                    : (s) => setState(() => _kind = s.first),
               ),
-              segments: const [
-                ButtonSegment(
-                  value: MediaKind.audio,
-                  icon: Icon(Icons.headphones, size: 17),
-                  label: Text('음원'),
-                ),
-                ButtonSegment(
-                  value: MediaKind.video,
-                  icon: Icon(Icons.movie_outlined, size: 17),
-                  label: Text('영상'),
-                ),
-              ],
-              selected: {_kind},
-              onSelectionChanged: busy
-                  ? null
-                  : (s) => setState(() => _kind = s.first),
             ),
             const SizedBox(height: 12),
             if (_kind == MediaKind.audio)
-              _formats<String>(
-                values: const {'mp3': 'MP3', 'm4a': 'M4A', 'opus': 'OPUS'},
-                sub: {
-                  for (final f in const ['mp3', 'm4a', 'opus'])
-                    f: size(estimateAudioBytes(info, f, fraction: fraction)),
-                },
-                selected: _audioFormat,
-                onSelected: (v) => setState(() => _audioFormat = v),
-                enabled: !busy,
+              dim(
+                _formats<String>(
+                  values: const {'mp3': 'MP3', 'm4a': 'M4A', 'opus': 'OPUS'},
+                  sub: {
+                    for (final f in const ['mp3', 'm4a', 'opus'])
+                      f: size(estimateAudioBytes(info, f, fraction: fraction)),
+                  },
+                  selected: _audioFormat,
+                  onSelected: (v) => setState(() => _audioFormat = v),
+                  enabled: !busy,
+                ),
               )
             else
-              _formats<int?>(
-                values: const {
-                  null: '최고',
-                  1080: '1080p',
-                  720: '720p',
-                  480: '480p',
-                  360: '360p',
-                },
-                sub: {
-                  for (final h in const <int?>[null, 1080, 720, 480, 360])
-                    h: size(estimateVideoBytes(info, h, fraction: fraction)),
-                },
-                selected: _maxHeight,
-                onSelected: (v) => setState(() => _maxHeight = v),
-                enabled: !busy,
+              dim(
+                _formats<int?>(
+                  values: const {
+                    null: '최고',
+                    1080: '1080p',
+                    720: '720p',
+                    480: '480p',
+                    360: '360p',
+                  },
+                  sub: {
+                    for (final h in const <int?>[null, 1080, 720, 480, 360])
+                      h: size(estimateVideoBytes(info, h, fraction: fraction)),
+                  },
+                  selected: _maxHeight,
+                  onSelected: (v) => setState(() => _maxHeight = v),
+                  enabled: !busy,
+                ),
               ),
             const SizedBox(height: 10),
             ExpansionTile(
-              initiallyExpanded: true,
+              // 접혀 있으면 처음부터 끝까지, 펼치면 구간만 저장한다(펼침 = 구간 자르기 켜짐).
+              key: ValueKey('trim-${info.url}'),
+              initiallyExpanded: _trimOn,
+              enabled: (canTrim || loading) && !busy,
+              onExpansionChanged: (open) {
+                setState(() => _trimOn = open);
+                // 구간 자르기를 펼치면 미리듣기에 쓸 소리를 미리 받아 둔다(너무 긴 영상은 제외).
+                if (open && info.durationSeconds <= 1800) {
+                  unawaited(
+                    _preview.prefetch(info.url, audioUrl: info.previewAudioUrl),
+                  );
+                }
+              },
               dense: true,
               tilePadding: EdgeInsets.zero,
               shape: sectionDivider,
               collapsedShape: sectionDivider,
               leading: Icon(Icons.content_cut, size: 17, color: colors.primary),
               title: const Text('구간 자르기'),
-              subtitle: trimmed
+              subtitle: loading
+                  ? const Text('길이를 알아오는 중… (??)')
+                  : !canTrim
+                  ? const Text('길이를 알 수 없는 영상은 자를 수 없습니다.')
+                  : trimmed
                   ? Text(
                       '${formatSeconds(_trimStart)}–${formatSeconds(_trimEnd)}',
                     )
-                  : null,
+                  : const Text('필요한 부분만 저장하려면 펼치세요'),
               childrenPadding: const EdgeInsets.only(bottom: 12),
               children: [
-                SwitchListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('필요한 구간만 잘라서 저장'),
-                  subtitle: canTrim
-                      ? null
-                      : const Text('길이를 알 수 없는 영상은 자를 수 없습니다.'),
-                  value: trimmed,
-                  onChanged: (busy || !canTrim)
-                      ? null
-                      : (v) => setState(() => _trimOn = v),
-                ),
+                if (loading)
+                  IgnorePointer(
+                    child: Opacity(
+                      opacity: .45,
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: colors.surfaceContainerLow,
+                          borderRadius: BorderRadius.circular(11),
+                          border: Border.all(color: colors.outlineVariant),
+                        ),
+                        child: const Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [TrimSelectorSkeleton(), RangePreviewSkeleton()],
+                        ),
+                      ),
+                    ),
+                  ),
                 if (trimmed)
                   Container(
                     padding: const EdgeInsets.all(10),
@@ -729,7 +948,13 @@ class _HomePageState extends State<HomePage> {
                           start: _trimStart,
                           end: _trimEnd,
                           storyboard: info.storyboard,
-                          audioUrl: info.previewAudioUrl,
+                          render: (s, e) => _preview.render(
+                            info.url,
+                            s,
+                            e,
+                            _gain,
+                            audioUrl: info.previewAudioUrl,
+                          ),
                           enabled: !busy,
                         ),
                       ],
@@ -739,7 +964,7 @@ class _HomePageState extends State<HomePage> {
             ),
             if (_kind == MediaKind.audio)
               ExpansionTile(
-                initiallyExpanded: true,
+                initiallyExpanded: false,
                 maintainState: true,
                 dense: true,
                 tilePadding: EdgeInsets.zero,
@@ -753,22 +978,40 @@ class _HomePageState extends State<HomePage> {
                 title: const Text('음량 조절'),
                 childrenPadding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
                 children: [
-                  GainSelector(
-                    value: _gain,
-                    enabled: !busy,
-                    analysisSource: (
-                      info.url,
-                      trimmed ? _trimStart : null,
-                      trimmed ? _trimEnd : null,
+                  dim(
+                    GainSelector(
+                      value: _gain,
+                      enabled: !busy,
+                      onPreview: () {
+                        // 음량을 비교해 듣기 좋게, 선택한 곳(또는 곡 앞쪽 30% 지점)에서 15초만 들려 준다.
+                        final s0 = trimmed ? _trimStart : 0;
+                        final e0 = trimmed ? _trimEnd : info.durationSeconds;
+                        final s1 = e0 - s0 > 30
+                            ? s0 + ((e0 - s0) * 0.3).floor()
+                            : s0;
+                        final e1 = e0 - s1 > 15 ? s1 + 15 : e0;
+                        return _preview.render(
+                          info.url,
+                          s1,
+                          e1,
+                          _gain,
+                          audioUrl: info.previewAudioUrl,
+                        );
+                      },
+                      analysisSource: (
+                        info.url,
+                        trimmed ? _trimStart : null,
+                        trimmed ? _trimEnd : null,
+                      ),
+                      onAuto: (token) => _b.measureGain(
+                        info.url,
+                        token,
+                        remote: true,
+                        startSec: trimmed ? _trimStart.toDouble() : null,
+                        endSec: trimmed ? _trimEnd.toDouble() : null,
+                      ),
+                      onChanged: (g) => setState(() => _gain = g),
                     ),
-                    onAuto: (token) => _b.measureGain(
-                      info.url,
-                      token,
-                      remote: true,
-                      startSec: trimmed ? _trimStart.toDouble() : null,
-                      endSec: trimmed ? _trimEnd.toDouble() : null,
-                    ),
-                    onChanged: (g) => setState(() => _gain = g),
                   ),
                 ],
               ),
@@ -776,6 +1019,7 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
+    return card;
   }
 
   double _selectedFraction(MediaInfo info) =>
@@ -886,10 +1130,19 @@ class _HomePageState extends State<HomePage> {
         if (_saved != null && !_downloading)
           Padding(
             padding: const EdgeInsets.only(top: 8),
-            child: FilledButton.tonalIcon(
+            child: PillButton(
               onPressed: () => widget.editController.open(_saved!),
               icon: const Icon(Icons.content_cut),
               label: const Text('편집하기 (듣고 구간 자르기)'),
+            ),
+          ),
+        if (_savedVideo != null && !_downloading)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: PillButton(
+              onPressed: () => widget.videoController.open(_savedVideo!),
+              icon: const Icon(Icons.movie_creation_outlined),
+              label: const Text('영상 편집하기 (보면서 구간 자르기)'),
             ),
           ),
       ],
@@ -920,9 +1173,16 @@ class _HomePageState extends State<HomePage> {
     final button = FilledButton.icon(
       onPressed: info == null || _downloading || _fetching ? null : _download,
       icon: const Icon(Icons.download, size: 19),
-      label: Text(_downloading ? '다운로드 중…' : '다운로드'),
+      label: Text(
+        _downloading
+            ? '다운로드 중…'
+            : trimmed
+            ? '구간 다운로드'
+            : '다운로드',
+      ),
     );
-    final summary = info == null
+    final loading = info == null && _fetching;
+    final summary = (info == null && !loading)
         ? null
         : Column(
             mainAxisSize: MainAxisSize.min,
@@ -931,13 +1191,19 @@ class _HomePageState extends State<HomePage> {
                 : CrossAxisAlignment.start,
             children: [
               Text(
-                bytes == null ? format : '$format · 약 ${formatBytes(bytes)}',
+                loading
+                    ? '$format · 약 ??'
+                    : bytes == null
+                    ? format
+                    : '$format · 약 ${formatBytes(bytes)}',
                 maxLines: 2,
                 style: theme.textTheme.labelLarge?.copyWith(
                   fontWeight: FontWeight.w700,
                 ),
               ),
-              if (info.durationSeconds > 0)
+              if (info == null)
+                Text('길이 ??', style: theme.textTheme.labelSmall)
+              else if (info.durationSeconds > 0)
                 Text(
                   trimmed
                       ? '선택 구간 · ${formatSeconds(_trimEnd - _trimStart)}'

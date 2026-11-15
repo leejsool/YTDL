@@ -3,17 +3,32 @@ library;
 
 import '../models.dart';
 
-const gainTargetLufs = -14;
+/// 자동 음량 조절의 목표(LUFS). 기본은 유튜브 기준 -14. 옵션 탭에서 바꾸면 AppSettings 가 이 값을 갱신한다.
+int gainTargetLufs = -14;
 
-List<String> gainMeasureArgs(String path, {double? startSec, double? endSec}) => [
-      '-nostdin', '-hide_banner', '-nostats',
+List<String> gainMeasureArgs(String path, {double? startSec, double? endSec}) =>
+    [
+      '-nostdin',
+      '-hide_banner',
+      '-nostats',
       if (startSec != null && endSec != null) ...[
-        '-ss', startSec.toStringAsFixed(3),
-        '-t', (endSec - startSec).toStringAsFixed(3),
+        '-ss',
+        startSec.toStringAsFixed(3),
+        '-t',
+        (endSec - startSec).toStringAsFixed(3),
       ],
-      '-i', path, '-map', '0:a:0', '-vn', '-sn', '-dn',
-      '-af', 'loudnorm=I=$gainTargetLufs:TP=-1.5:LRA=11:print_format=json',
-      '-f', 'null', '-',
+      '-i',
+      path,
+      '-map',
+      '0:a:0',
+      '-vn',
+      '-sn',
+      '-dn',
+      '-af',
+      'loudnorm=I=$gainTargetLufs:TP=-1.5:LRA=11:print_format=json',
+      '-f',
+      'null',
+      '-',
     ];
 
 double gainFromMeasurement(String log) {
@@ -38,20 +53,35 @@ String? gainFilter(AudioGain g) {
   return g.db > 0 ? '$v,alimiter=limit=0.97:level=0' : v;
 }
 
+/// 미리듣기용 재생 파일 인자(m4a). 음량 조절이 있으면 적용해서 다시 인코딩한다.
+List<String> previewEncodeArgs(AudioGain g, [String ext = 'm4a']) =>
+    gainEncodeArgs(g, ext) ??
+    (ext == 'wav'
+        ? const ['-vn', '-c:a', 'pcm_s16le']
+        : const ['-vn', '-c:a', 'aac', '-b:a', '192k']);
+
+/// 미리듣기 결과 파일 이름 꼬리표(음량마다 다른 파일이 되게).
+String previewGainTag(AudioGain g) => !g.isActive
+    ? 'plain'
+    : g.mode == GainMode.auto
+    ? 'auto'
+    : 'g${g.db.round()}';
+
 /// 확장자에 맞는 인코더. 원본과 같은 형식으로 다시 만들되 음질은 넉넉하게 잡는다.
 List<String> _codecFor(String ext) => switch (ext.toLowerCase()) {
-      'mp3' => ['-c:a', 'libmp3lame', '-q:a', '0'],
-      'm4a' || 'aac' || 'mp4' => ['-c:a', 'aac', '-b:a', '256k'],
-      'opus' => ['-c:a', 'libopus', '-b:a', '192k'],
-      'ogg' || 'oga' => ['-c:a', 'libvorbis', '-q:a', '6'],
-      'flac' => ['-c:a', 'flac'],
-      'wav' => ['-c:a', 'pcm_s16le'],
-      'wma' => ['-c:a', 'wmav2', '-b:a', '192k'],
-      _ => const [],
-    };
+  'mp3' => ['-c:a', 'libmp3lame', '-q:a', '0'],
+  'm4a' || 'aac' || 'mp4' => ['-c:a', 'aac', '-b:a', '256k'],
+  'opus' => ['-c:a', 'libopus', '-b:a', '192k'],
+  'ogg' || 'oga' => ['-c:a', 'libvorbis', '-q:a', '6'],
+  'flac' => ['-c:a', 'flac'],
+  'wav' => ['-c:a', 'pcm_s16le'],
+  'wma' => ['-c:a', 'wmav2', '-b:a', '192k'],
+  _ => const [],
+};
 
 /// 앨범 그림(표지)을 담을 수 있는 형식은 그림도 그대로 가져간다.
-bool _keepsCover(String ext) => const {'mp3', 'm4a', 'flac'}.contains(ext.toLowerCase());
+bool _keepsCover(String ext) =>
+    const {'mp3', 'm4a', 'flac'}.contains(ext.toLowerCase());
 
 /// `-c copy` 대신 쓸 "다시 인코딩 + 음량 조절" 인자. 입력/출력 경로는 호출하는 쪽이 붙인다.
 /// 조절이 없으면 null(= `-c copy` 를 쓴다).
@@ -59,9 +89,11 @@ List<String>? gainEncodeArgs(AudioGain g, String ext) {
   final f = gainFilter(g);
   if (f == null) return null;
   return [
-    '-map', '0:a',
+    '-map',
+    '0:a',
     if (_keepsCover(ext)) ...['-map', '0:v?', '-c:v', 'copy'],
-    '-af', f,
+    '-af',
+    f,
     ..._codecFor(ext),
   ];
 }

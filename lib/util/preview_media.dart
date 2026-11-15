@@ -118,7 +118,22 @@ class Storyboard {
 /// 미리듣기에 쓸 소리 전용 스트림 주소. 없으면 null.
 /// 어느 기기에서나 재생되는 AAC(m4a)를 먼저 고르고, 없으면 다른 소리 전용 스트림을 쓴다.
 /// 조각 목록(m3u8/dash)이나 자동 음량 보정(-drc) 버전은 쓰지 않는다.
-String? pickPreviewAudioUrl(List<dynamic>? formats) {
+///
+/// 여러 언어 더빙이 있는 영상은 yt-dlp 가 실제 다운로드에 고르는 소리([requestedFormats] 의 소리 전용 항목,
+/// 보통 원래 언어)를 그대로 쓴다. 그래야 미리듣기와 저장되는 소리가 같다.
+String? pickPreviewAudioUrl(List<dynamic>? formats, [List<dynamic>? requestedFormats]) {
+  if (requestedFormats != null) {
+    for (final f in requestedFormats) {
+      if (f is Map<String, dynamic> &&
+          (f['vcodec'] == null || f['vcodec'] == 'none') &&
+          f['acodec'] != null &&
+          f['acodec'] != 'none' &&
+          (f['protocol'] == 'https') &&
+          (f['url'] ?? '').toString().isNotEmpty) {
+        return f['url'].toString();
+      }
+    }
+  }
   if (formats == null) return null;
   final candidates = <Map<String, dynamic>>[
     for (final f in formats)
@@ -140,6 +155,10 @@ String? pickPreviewAudioUrl(List<dynamic>? formats) {
   }
 
   candidates.sort((a, b) {
+    // 더빙(번역) 소리보다 원래 언어 소리를 먼저.
+    double lang(Map<String, dynamic> f) => (f['language_preference'] as num?)?.toDouble() ?? -1;
+    final l = lang(b).compareTo(lang(a));
+    if (l != 0) return l;
     final r = rank(a).compareTo(rank(b));
     if (r != 0) return r;
     // 같은 종류면 가벼운 쪽(비트레이트가 낮은 쪽)이 먼저 열린다.

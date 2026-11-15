@@ -46,6 +46,9 @@ class MainActivity : FlutterActivity() {
     private var sharedText: String? = null
     private var initialized = false
 
+    /** 저장 폴더 이름(Music/<이름>, Movies/<이름>). 옵션 탭에서 바꾼다. */
+    @Volatile private var folderName = "YTDL"
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         sharedText = extractSharedText(intent)
@@ -189,6 +192,86 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+            // 미리듣기: 유튜브 소리의 일부 구간만 받아 캐시 폴더에 둔다(저장소에 올리지 않음).
+            "previewSegment" -> async(result) {
+                ensureInit()
+                val id = call.argument<String>("id")!!
+                val url = call.argument<String>("url")!!
+                val args = call.argument<List<String>>("args")!!
+                val root = File(cacheDir, "preview").apply { mkdirs() }
+                // 오래된 미리듣기 파일 정리(10분 지난 것)
+                root.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > 600_000 }
+                    ?.forEach { it.deleteRecursively() }
+                val dir = File(root, id).apply { deleteRecursively(); mkdirs() }
+                val req = YoutubeDLRequest(url)
+                req.addOption("-P", dir.absolutePath)
+                req.addCommands(args)
+                val resp = YoutubeDL.execute(req, processId = id, callback = { _, _, _ -> })
+                val reported = resp.out.lineSequence()
+                    .lastOrNull { it.startsWith("YTDL_FILE:") }
+                    ?.removePrefix("YTDL_FILE:")?.trim()?.let { File(it) }
+                val file = reported?.takeIf { it.exists() }
+                    ?: dir.listFiles()?.filter { it.isFile && !it.name.endsWith(".part") }
+                        ?.maxByOrNull { it.lastModified() }
+                    ?: throw IOException("미리듣기 소리를 받지 못했습니다.")
+                file.absolutePath
+            }
+
+            // 미리듣기: 받은 소리(또는 파일의 일부)에 음량 조절을 적용해 재생용 m4a 로 만든다.
+            "previewGain" -> async(result) {
+                ensureInit()
+                val src = call.argument<String>("src")!!
+                val out = File(File(cacheDir, "preview").apply { mkdirs() }, call.argument<String>("outName")!!)
+                val startSec = call.argument<Number>("startSec")?.toDouble()
+                val endSec = call.argument<Number>("endSec")?.toDouble()
+                val args = call.argument<List<String>>("args")!!
+                if (!out.exists() || out.length() == 0L) {
+                    out.parentFile?.mkdirs()
+                    val range = if (startSec != null && endSec != null) listOf(
+                        "-ss", "%.3f".format(java.util.Locale.US, startSec),
+                        "-t", "%.3f".format(java.util.Locale.US, endSec - startSec),
+                    ) else emptyList()
+                    runFfmpeg(
+                        listOf("-nostdin", "-y", "-loglevel", "error") + range +
+                            listOf("-i", src) + args + out.absolutePath
+                    )
+                    if (!out.exists() || out.length() == 0L) throw IOException("미리듣기 파일이 비어 있습니다.")
+                    trimPreviewCache(out)
+                }
+                out.absolutePath
+            }
+
+            // 영상 자르기: 시작 지점을 입력 앞에 두어 빠르게 찾고, 결과를 Movies/YTDL 에 저장한다.
+            "trimVideo" -> async(result) {
+                ensureInit()
+                val src = File(call.argument<String>("src")!!)
+                if (!src.exists()) throw IOException("원본 파일을 찾을 수 없습니다.")
+                val startMs = call.argument<Number>("startMs")!!.toLong()
+                val endMs = call.argument<Number>("endMs")!!.toLong()
+                val outName = call.argument<String>("outName")!!
+                val args = call.argument<List<String>>("args")!!
+
+                val tmp = File(getExternalFilesDir(null) ?: filesDir, "tmp/vtrim${System.nanoTime()}").apply {
+                    mkdirs()
+                }
+                try {
+                    val out = File(tmp, outName)
+                    runFfmpeg(
+                        listOf(
+                            "-nostdin", "-y", "-loglevel", "error",
+                            "-ss", "%.3f".format(java.util.Locale.US, startMs / 1000.0),
+                            "-i", src.absolutePath,
+                            "-t", "%.3f".format(java.util.Locale.US, (endMs - startMs) / 1000.0),
+                            "-map_metadata", "0",
+                        ) + args + out.absolutePath
+                    )
+                    if (!out.exists() || out.length() == 0L) throw IOException("잘라낸 영상이 비어 있습니다.")
+                    publish(out, false)
+                } finally {
+                    tmp.deleteRecursively()
+                }
+            }
+
             "cancel" -> {
                 val id = call.argument<String>("id")!!
                 gainProbes[id]?.cancel()
@@ -201,12 +284,30 @@ class MainActivity : FlutterActivity() {
                 YoutubeDL.updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel.STABLE)?.name ?: "UNKNOWN"
             }
 
+            "setFolder" -> {
+                folderName = call.argument<String>("name") ?: "YTDL"
+                result.success(true)
+            }
+
             "getSharedText" -> {
                 result.success(sharedText)
                 sharedText = null
             }
 
             else -> result.notImplemented()
+        }
+    }
+
+    /** 미리듣기 임시 파일(특히 압축 없는 wav)이 쌓이지 않게, 총 400MB 를 넘으면 오래된 것부터 지운다. */
+    private fun trimPreviewCache(keep: File) {
+        val root = File(cacheDir, "preview")
+        val all = root.walkTopDown().filter { it.isFile && it != keep }.sortedBy { it.lastModified() }.toMutableList()
+        var total = all.sumOf { it.length() } + keep.length()
+        val limit = 400L * 1024 * 1024
+        for (f in all) {
+            if (total <= limit) break
+            total -= f.length()
+            f.delete()
         }
     }
 
@@ -297,7 +398,7 @@ class MainActivity : FlutterActivity() {
             "webm" -> if (audio) "audio/webm" else "video/webm"
             else -> if (audio) "audio/*" else "video/*"
         }
-        val relative = if (audio) "Music/YTDL" else "Movies/YTDL"
+        val relative = if (audio) "Music/$folderName" else "Movies/$folderName"
         val collection = if (audio) {
             MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         } else {
@@ -331,7 +432,7 @@ class MainActivity : FlutterActivity() {
         )
         return mapOf(
             "location" to "$relative/$savedName",
-            "path" to File(File(root, "YTDL"), savedName).absolutePath,
+            "path" to File(File(root, folderName), savedName).absolutePath,
         )
     }
 }

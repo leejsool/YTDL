@@ -9,6 +9,7 @@ import '../models.dart';
 import '../util/names.dart';
 import 'backend.dart';
 import 'gain_args.dart';
+import 'video_args.dart';
 import 'ytdlp_args.dart';
 
 /// Windows용 엔진. %LOCALAPPDATA%\YTDL\bin 에 yt-dlp / ffmpeg / deno 를 두고 직접 실행한다.
@@ -24,7 +25,12 @@ class DesktopBackend extends Backend {
       'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip';
 
   late final String _binDir;
-  late String _saveDir;
+  // prepare() 가 저장해 둔 값으로 바꾸기 전에도(예: 옵션 탭이 먼저 그려질 때) 읽을 수 있게 기본값을 둔다.
+  String _saveDir = [
+    Platform.environment['USERPROFILE'] ?? 'C:',
+    'Downloads',
+    'YTDL',
+  ].join(Platform.pathSeparator);
   SharedPreferences? _prefs;
 
   String get _ytdlp => '$_binDir\\yt-dlp.exe';
@@ -34,11 +40,14 @@ class DesktopBackend extends Backend {
   static const _env = {'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1'};
 
   List<String> get _common => [
-        '--ffmpeg-location', _binDir,
-        '--js-runtimes', 'deno:$_deno',
-        '--encoding', 'utf-8',
-        '--no-warnings',
-      ];
+    '--ffmpeg-location',
+    _binDir,
+    '--js-runtimes',
+    'deno:$_deno',
+    '--encoding',
+    'utf-8',
+    '--no-warnings',
+  ];
 
   @override
   String get saveLocationLabel => _saveDir;
@@ -74,7 +83,8 @@ class DesktopBackend extends Backend {
     _prefs = await SharedPreferences.getInstance();
     final home = Platform.environment['USERPROFILE'] ?? 'C:\\';
     _saveDir = _prefs!.getString('saveDir') ?? '$home\\Downloads\\YTDL';
-    final base = Platform.environment['LOCALAPPDATA'] ?? '$home\\AppData\\Local';
+    final base =
+        Platform.environment['LOCALAPPDATA'] ?? '$home\\AppData\\Local';
     _binDir = '$base\\YTDL\\bin';
     Directory(_binDir).createSync(recursive: true);
 
@@ -82,8 +92,12 @@ class DesktopBackend extends Backend {
       await _fetch(_ytdlpUrl, _ytdlp, 'yt-dlp 내려받는 중', onStatus);
     }
     if (!File(_ffmpeg).existsSync()) {
-      await _fetchZip(_ffmpegUrl, ['ffmpeg.exe', 'ffprobe.exe'],
-          'ffmpeg 내려받는 중 (처음 한 번, 약 100MB)', onStatus);
+      await _fetchZip(
+        _ffmpegUrl,
+        ['ffmpeg.exe', 'ffprobe.exe'],
+        'ffmpeg 내려받는 중 (처음 한 번, 약 100MB)',
+        onStatus,
+      );
     }
     if (!File(_deno).existsSync()) {
       await _fetchZip(_denoUrl, ['deno.exe'], 'JS 런타임 내려받는 중', onStatus);
@@ -95,8 +109,9 @@ class DesktopBackend extends Backend {
     if (now - last > const Duration(days: 1).inMilliseconds) {
       onStatus('다운로드 엔진 업데이트 확인 중…', null);
       try {
-        await Process.run(_ytdlp, ['-U'], environment: _env)
-            .timeout(const Duration(seconds: 60));
+        await Process.run(_ytdlp, [
+          '-U',
+        ], environment: _env).timeout(const Duration(seconds: 60));
         await _prefs!.setInt('lastUpdateCheck', now);
       } catch (_) {
         // 오프라인 등으로 실패해도 기존 엔진으로 계속 진행.
@@ -105,7 +120,11 @@ class DesktopBackend extends Backend {
   }
 
   Future<void> _fetch(
-      String url, String dest, String label, SetupCallback onStatus) async {
+    String url,
+    String dest,
+    String label,
+    SetupCallback onStatus,
+  ) async {
     onStatus(label, null);
     final client = HttpClient()..userAgent = 'ytdl-app';
     try {
@@ -130,8 +149,12 @@ class DesktopBackend extends Backend {
     }
   }
 
-  Future<void> _fetchZip(String url, List<String> wanted, String label,
-      SetupCallback onStatus) async {
+  Future<void> _fetchZip(
+    String url,
+    List<String> wanted,
+    String label,
+    SetupCallback onStatus,
+  ) async {
     final zip = '$_binDir\\_download.zip';
     final tmp = Directory('$_binDir\\_extract');
     await _fetch(url, zip, label, onStatus);
@@ -164,8 +187,12 @@ class DesktopBackend extends Backend {
       stdoutEncoding: utf8,
       stderrEncoding: utf8,
     );
-    if (r.exitCode != 0) throw Exception(_summarize((r.stderr as String).split('\n')));
-    return MediaInfo.fromJson(jsonDecode(r.stdout as String) as Map<String, dynamic>, url);
+    if (r.exitCode != 0)
+      throw Exception(_summarize((r.stderr as String).split('\n')));
+    return MediaInfo.fromJson(
+      jsonDecode(r.stdout as String) as Map<String, dynamic>,
+      url,
+    );
   }
 
   @override
@@ -176,13 +203,19 @@ class DesktopBackend extends Backend {
     double? startSec,
     double? endSec,
   }) async {
-    final work = remote ? await Directory.systemTemp.createTemp('ytdl_gain_') : null;
+    final work = remote
+        ? await Directory.systemTemp.createTemp('ytdl_gain_')
+        : null;
     try {
       var input = source;
       if (work != null) {
         final output = await _runGainProbe(_ytdlp, [
-          ..._common, '-P', work.path,
-          ...buildAudioProbeArgs(startSec: startSec, endSec: endSec), '--', source,
+          ..._common,
+          '-P',
+          work.path,
+          ...buildAudioProbeArgs(startSec: startSec, endSec: endSec),
+          '--',
+          source,
         ], token);
         final parser = ProgressParser();
         for (final line in const LineSplitter().convert(output)) {
@@ -190,21 +223,39 @@ class DesktopBackend extends Backend {
         }
         input = parser.filePath ?? (throw Exception('분석할 음원을 받지 못했습니다.'));
       }
-      final log = await _runGainProbe(_ffmpeg, gainMeasureArgs(
-        input, startSec: remote ? null : startSec, endSec: remote ? null : endSec,
-      ), token);
+      final log = await _runGainProbe(
+        _ffmpeg,
+        gainMeasureArgs(
+          input,
+          startSec: remote ? null : startSec,
+          endSec: remote ? null : endSec,
+        ),
+        token,
+      );
       return gainFromMeasurement(log);
     } finally {
       if (work != null) await work.delete(recursive: true);
     }
   }
 
-  Future<String> _runGainProbe(String executable, List<String> args, CancelToken token) async {
+  Future<String> _runGainProbe(
+    String executable,
+    List<String> args,
+    CancelToken token,
+  ) async {
     if (token.cancelled) throw CancelledException();
     final process = await Process.start(executable, args, environment: _env);
     void stop() {
-      unawaited(Process.run('taskkill', ['/T', '/F', '/PID', '${process.pid}']).then<void>((_) {}, onError: (Object _) {}));
+      unawaited(
+        Process.run('taskkill', [
+          '/T',
+          '/F',
+          '/PID',
+          '${process.pid}',
+        ]).then<void>((_) {}, onError: (Object _) {}),
+      );
     }
+
     token.onCancel = stop;
     if (token.cancelled) stop();
     try {
@@ -214,7 +265,10 @@ class DesktopBackend extends Backend {
         process.stderr.transform(decoder).join(),
       ]);
       final code = await process.exitCode;
-      final output = (await logs.timeout(const Duration(seconds: 8), onTimeout: () => ['', ''])).join('\n');
+      final output = (await logs.timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => ['', ''],
+      )).join('\n');
       if (token.cancelled) throw CancelledException();
       if (code != 0) throw Exception(_summarize(output.split('\n')));
       return output;
@@ -232,14 +286,16 @@ class DesktopBackend extends Backend {
     CancelToken token,
   ) async {
     Directory(_saveDir).createSync(recursive: true);
-    final proc = await Process.start(
-      _ytdlp,
-      [..._common, '-P', _saveDir, ...buildDownloadArgs(options), url],
-      environment: _env,
-    );
+    final proc = await Process.start(_ytdlp, [
+      ..._common,
+      '-P',
+      _saveDir,
+      ...buildDownloadArgs(options),
+      url,
+    ], environment: _env);
     // ffmpeg 자식 프로세스까지 함께 종료.
-    token.onCancel =
-        () => Process.run('taskkill', ['/T', '/F', '/PID', '${proc.pid}']);
+    token.onCancel = () =>
+        Process.run('taskkill', ['/T', '/F', '/PID', '${proc.pid}']);
 
     final parser = ProgressParser();
     final errLines = <String>[];
@@ -247,9 +303,9 @@ class DesktopBackend extends Backend {
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .forEach((line) {
-      final p = parser.parse(line);
-      if (p != null) onProgress(p);
-    });
+          final p = parser.parse(line);
+          if (p != null) onProgress(p);
+        });
     final err = proc.stderr
         .transform(utf8.decoder)
         .transform(const LineSplitter())
@@ -259,42 +315,57 @@ class DesktopBackend extends Backend {
     // yt-dlp 가 끝났는데 그 자식 프로세스(deno/ffmpeg)가 출력 파이프를 계속 붙잡고 있으면
     // 스트림이 닫히지 않아 영원히 "다운로드 중"에 머물 수 있다. 남은 출력은 보통 즉시 도착하므로
     // 잠깐만 기다리고 넘어간다.
-    await Future.wait([out, err]).timeout(const Duration(seconds: 5), onTimeout: () => const []);
+    await Future.wait([out, err])
+        .timeout(const Duration(seconds: 5), onTimeout: () => const []);
 
     if (token.cancelled) throw CancelledException();
     if (code != 0) throw Exception(_summarize(errLines));
     final path = parser.filePath;
 
     // 음량 조절: 받은 파일을 같은 형식으로 다시 인코딩해서 바꿔치기한다.
-    if (options.kind == MediaKind.audio && options.gain.isActive && path != null) {
+    if (options.kind == MediaKind.audio &&
+        options.gain.isActive &&
+        path != null) {
       onProgress(const DownloadProgress(stage: '음량 조절 중…'));
       try {
         await _applyGain(path, options.gain, token);
       } on CancelledException {
         rethrow;
       } catch (e) {
-        throw Exception('음량 조절에 실패했어요. 받은 파일은 음량 조절 없이 저장돼 있어요: $path\n'
-            '${e.toString().replaceFirst('Exception: ', '')}');
+        throw Exception(
+          '음량 조절에 실패했어요. 받은 파일은 음량 조절 없이 저장돼 있어요: $path\n'
+          '${e.toString().replaceFirst('Exception: ', '')}',
+        );
       }
     }
     return DownloadResult(location: path ?? _saveDir, filePath: path);
   }
 
   /// [path] 파일의 음량을 바꿔 같은 이름으로 다시 저장한다. 실패하면 원래 파일은 그대로 둔다.
-  Future<void> _applyGain(String path, AudioGain gain, CancelToken token) async {
+  Future<void> _applyGain(
+    String path,
+    AudioGain gain,
+    CancelToken token,
+  ) async {
     final ext = extensionOf(path);
     final encode = gainEncodeArgs(gain, ext);
     if (encode == null) return;
     final tmp = '${path.substring(0, path.length - ext.length - 1)}.gain.$ext';
     try {
       final proc = await Process.start(_ffmpeg, [
-        '-nostdin', '-y', '-loglevel', 'error',
-        '-i', path,
-        '-map_metadata', '0',
+        '-nostdin',
+        '-y',
+        '-loglevel',
+        'error',
+        '-i',
+        path,
+        '-map_metadata',
+        '0',
         ...encode,
         tmp,
       ]);
-      token.onCancel = () => Process.run('taskkill', ['/T', '/F', '/PID', '${proc.pid}']);
+      token.onCancel = () =>
+          Process.run('taskkill', ['/T', '/F', '/PID', '${proc.pid}']);
       final err = proc.stderr.transform(utf8.decoder).join();
       unawaited(proc.stdout.drain<void>());
       final code = await proc.exitCode;
@@ -351,11 +422,132 @@ class DesktopBackend extends Backend {
     return DownloadResult(location: out, filePath: out);
   }
 
+  Future<Directory> _previewDir() async {
+    final d = Directory('${Directory.systemTemp.path}\\ytdl_preview');
+    await d.create(recursive: true);
+    // 오래된 미리듣기 파일 정리(10분 지난 것)
+    for (final e in d.listSync()) {
+      try {
+        if (DateTime.now().difference(e.statSync().modified).inMinutes > 10) {
+          e.deleteSync(recursive: true);
+        }
+      } catch (_) {}
+    }
+    return d;
+  }
+
+  @override
+  Future<String> previewDownload(String url, List<String> args) async {
+    final root = await _previewDir();
+    final dir = await root.createTemp('seg_');
+    final output = await _runGainProbe(_ytdlp, [
+      ..._common,
+      '-P',
+      dir.path,
+      ...args,
+      '--',
+      url,
+    ], CancelToken());
+    final parser = ProgressParser();
+    for (final line in const LineSplitter().convert(output)) {
+      parser.parse(line);
+    }
+    final path = parser.filePath;
+    if (path == null || !File(path).existsSync()) {
+      throw Exception('미리듣기 소리를 받지 못했습니다.');
+    }
+    return path;
+  }
+
+  @override
+  Future<String> previewGain(
+    String srcPath,
+    AudioGain gain, {
+    double? startSec,
+    double? endSec,
+    String ext = 'm4a',
+  }) async {
+    final range = startSec != null && endSec != null;
+    if (!range && !gain.isActive && srcPath.toLowerCase().endsWith('.$ext')) {
+      return srcPath;
+    }
+    final root = await _previewDir();
+    final out =
+        '${root.path}\\${previewFileKey(srcPath)}_${previewGainTag(gain)}'
+        '${range ? '_${startSec.round()}_${endSec.round()}' : ''}.$ext';
+    if (File(out).existsSync() && File(out).lengthSync() > 0) return out;
+    await _runGainProbe(_ffmpeg, [
+      '-nostdin',
+      '-y',
+      '-loglevel',
+      'error',
+      if (range) ...[
+        '-ss',
+        startSec.toStringAsFixed(3),
+        '-t',
+        (endSec - startSec).toStringAsFixed(3),
+      ],
+      '-i',
+      srcPath,
+      ...previewEncodeArgs(gain, ext),
+      out,
+    ], CancelToken());
+    if (!File(out).existsSync() || File(out).lengthSync() == 0) {
+      throw Exception('미리듣기 파일이 비어 있습니다.');
+    }
+    return out;
+  }
+
+  @override
+  Future<DownloadResult> trimVideo(
+    String srcPath,
+    double startSec,
+    double endSec,
+    String outBaseName, {
+    bool reencode = false,
+  }) async {
+    final src = File(srcPath);
+    if (!src.existsSync()) throw Exception('원본 파일을 찾을 수 없습니다: $srcPath');
+    final ext = videoTrimExtension(extensionOf(srcPath), reencode: reencode);
+    final dir = src.parent.path;
+    final sep = Platform.pathSeparator;
+    var out = '$dir$sep$outBaseName.$ext';
+    for (var i = 2; File(out).existsSync(); i++) {
+      out = '$dir$sep$outBaseName ($i).$ext';
+    }
+    final r = await Process.run(
+      _ffmpeg,
+      [
+        '-nostdin', '-y', '-loglevel', 'error',
+        '-ss', startSec.toStringAsFixed(3),
+        '-i', srcPath,
+        '-t', (endSec - startSec).toStringAsFixed(3),
+        '-map_metadata', '0',
+        ...videoTrimArgs(reencode: reencode, outExt: ext),
+        out,
+      ],
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
+    if (r.exitCode != 0 || !File(out).existsSync()) {
+      throw Exception(_summarize(('${r.stderr}').split(RegExp(r'\r?\n'))));
+    }
+    return DownloadResult(location: out, filePath: out);
+  }
+
   @override
   Future<String> updateEngine() async {
-    final r = await Process.run(_ytdlp, ['-U'],
-        environment: _env, stdoutEncoding: utf8, stderrEncoding: utf8);
-    await _prefs?.setInt('lastUpdateCheck', DateTime.now().millisecondsSinceEpoch);
+    final r = await Process.run(
+      _ytdlp,
+      ['-U'],
+      environment: _env,
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
+    await _prefs?.setInt(
+      'lastUpdateCheck',
+      DateTime.now().millisecondsSinceEpoch,
+    );
     final text = '${r.stdout}'.trim();
     return text.isEmpty ? '완료' : text.split('\n').last;
   }

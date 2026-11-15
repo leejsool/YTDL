@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models.dart';
 import '../util/names.dart';
 import 'backend.dart';
 import 'gain_args.dart';
+import 'video_args.dart';
 import 'ytdlp_args.dart';
 
 class AndroidBackend extends Backend {
@@ -26,22 +28,68 @@ class AndroidBackend extends Backend {
   static const _method = MethodChannel('ytdl/native');
   static const _events = EventChannel('ytdl/progress');
   final Map<String, void Function(String line)> _listeners = {};
-  int _seq = 0;
+  // 앱을 다시 켜도 임시 폴더 이름이 겹치지 않게 시각에서 시작한다.
+  int _seq = DateTime.now().millisecondsSinceEpoch;
+
+  String _folder = 'YTDL';
 
   @override
-  String get saveLocationLabel => '음원 → Music/YTDL · 영상 → Movies/YTDL';
+  String get folderName => _folder;
+
+  @override
+  bool get canRenameFolder => true;
+
+  @override
+  String get saveLocationLabel => '음원 → Music/$_folder · 영상 → Movies/$_folder';
+
+  /// 폴더 이름으로 쓸 수 없는 글자를 걷어낸다. 비면 기본값.
+  static String cleanFolderName(String name) {
+    final t = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
+    return t.isEmpty ? 'YTDL' : t;
+  }
+
+  @override
+  Future<void> setFolderName(String name) async {
+    _folder = cleanFolderName(name);
+    await _method.invokeMethod<bool>('setFolder', {'name': _folder});
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('set_folder', _folder);
+    } catch (_) {}
+  }
 
   @override
   Future<void> prepare(SetupCallback onStatus) async {
     onStatus('다운로드 엔진을 준비하는 중…', null);
     await _method.invokeMethod('init');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _folder = cleanFolderName(prefs.getString('set_folder') ?? 'YTDL');
+      await _method.invokeMethod<bool>('setFolder', {'name': _folder});
+    } catch (_) {}
+    // 유튜브가 자주 바뀌어서 내장 yt-dlp 가 낡으면 403 등으로 다운로드가 막힌다. 하루에 한 번 최신으로 맞춘다.
+    // (앱을 새로 설치하면 내장 버전으로 돌아가므로, 그때는 첫 실행에 바로 업데이트된다.)
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final last = prefs.getInt('lastUpdateCheck') ?? 0;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now - last > const Duration(hours: 24).inMilliseconds) {
+        onStatus('다운로드 엔진을 최신으로 업데이트하는 중…', null);
+        await _method.invokeMethod<String>('update');
+        await prefs.setInt('lastUpdateCheck', now);
+      }
+    } catch (_) {
+      // 인터넷이 없거나 업데이트에 실패해도 기존 엔진으로 계속 쓴다.
+    }
   }
 
   @override
   Future<MediaInfo> fetchInfo(String url) async {
     final json = await _method.invokeMethod<String>('getInfo', {'url': url});
     // yt-dlp가 경고 줄을 섞어 내보낼 수 있어 JSON 객체 줄만 골라낸다.
-    final line = (json ?? '').split('\n').lastWhere(
+    final line = (json ?? '')
+        .split('\n')
+        .lastWhere(
           (l) => l.trimLeft().startsWith('{'),
           orElse: () => throw Exception('영상 정보를 읽지 못했습니다.'),
         );
@@ -59,15 +107,24 @@ class AndroidBackend extends Backend {
     if (token.cancelled) throw CancelledException();
     final id = 'gain${_seq++}';
     token.onCancel = () {
-      unawaited(_method.invokeMethod<void>('cancel', {'id': id}).catchError((Object _) {}));
+      unawaited(
+        _method
+            .invokeMethod<void>('cancel', {'id': id})
+            .catchError((Object _) {}),
+      );
     };
     try {
       final log = await _method.invokeMethod<String>('measureGain', {
         'id': id,
         'source': source,
-        'downloadArgs': remote ? buildAudioProbeArgs(startSec: startSec, endSec: endSec) : null,
-        'measureArgs': gainMeasureArgs('YTDL_AUDIO_INPUT',
-          startSec: remote ? null : startSec, endSec: remote ? null : endSec),
+        'downloadArgs': remote
+            ? buildAudioProbeArgs(startSec: startSec, endSec: endSec)
+            : null,
+        'measureArgs': gainMeasureArgs(
+          'YTDL_AUDIO_INPUT',
+          startSec: remote ? null : startSec,
+          endSec: remote ? null : endSec,
+        ),
       });
       if (token.cancelled) throw CancelledException();
       return gainFromMeasurement(log ?? '');
@@ -104,7 +161,10 @@ class AndroidBackend extends Backend {
             ? gainEncodeArgs(options.gain, options.audioFormat)
             : null,
       });
-      return DownloadResult(location: r?['location'] ?? '', filePath: r?['path']);
+      return DownloadResult(
+        location: r?['location'] ?? '',
+        filePath: r?['path'],
+      );
     } on PlatformException catch (e) {
       if (token.cancelled) throw CancelledException();
       throw Exception(e.message ?? '다운로드에 실패했습니다.');
@@ -131,9 +191,77 @@ class AndroidBackend extends Backend {
         // null 이면 그대로 복사(-c copy), 있으면 음량 조절하며 다시 인코딩.
         'encodeArgs': gainEncodeArgs(gain, ext),
       });
-      return DownloadResult(location: r?['location'] ?? '', filePath: r?['path']);
+      return DownloadResult(
+        location: r?['location'] ?? '',
+        filePath: r?['path'],
+      );
     } on PlatformException catch (e) {
       throw Exception(e.message ?? '자르기에 실패했습니다.');
+    }
+  }
+
+  @override
+  Future<DownloadResult> trimVideo(
+    String srcPath,
+    double startSec,
+    double endSec,
+    String outBaseName, {
+    bool reencode = false,
+  }) async {
+    try {
+      final ext = videoTrimExtension(extensionOf(srcPath), reencode: reencode);
+      final r = await _method.invokeMapMethod<String, String>('trimVideo', {
+        'src': srcPath,
+        'startMs': (startSec * 1000).round(),
+        'endMs': (endSec * 1000).round(),
+        'outName': '$outBaseName.$ext',
+        'args': videoTrimArgs(reencode: reencode, outExt: ext),
+      });
+      return DownloadResult(location: r?['location'] ?? '', filePath: r?['path']);
+    } on PlatformException catch (e) {
+      throw Exception(e.message ?? '영상 자르기에 실패했습니다.');
+    }
+  }
+
+  @override
+  Future<String> previewDownload(String url, List<String> args) async {
+    try {
+      final path = await _method.invokeMethod<String>('previewSegment', {
+        'id': 'pv${_seq++}',
+        'url': url,
+        'args': args,
+      });
+      return path ?? (throw Exception('미리듣기 소리를 받지 못했습니다.'));
+    } on PlatformException catch (e) {
+      throw Exception(e.message ?? '미리듣기 소리를 받지 못했습니다.');
+    }
+  }
+
+  @override
+  Future<String> previewGain(
+    String srcPath,
+    AudioGain gain, {
+    double? startSec,
+    double? endSec,
+    String ext = 'm4a',
+  }) async {
+    final range = startSec != null && endSec != null;
+    if (!range && !gain.isActive && srcPath.toLowerCase().endsWith('.$ext')) {
+      return srcPath;
+    }
+    try {
+      final path = await _method.invokeMethod<String>('previewGain', {
+        'src': srcPath,
+        'outName':
+            '${previewFileKey(srcPath)}_${previewGainTag(gain)}'
+            '${range ? '_${startSec.round()}_${endSec.round()}' : ''}.$ext',
+        'startSec': startSec,
+        'endSec': endSec,
+        'args': previewEncodeArgs(gain, ext),
+      });
+      return path ?? (throw Exception('미리듣기 파일을 만들지 못했습니다.'));
+    } on PlatformException catch (e) {
+      throw Exception(e.message ?? '미리듣기 파일을 만들지 못했습니다.');
     }
   }
 

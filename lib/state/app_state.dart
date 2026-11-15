@@ -9,7 +9,10 @@ import '../util/names.dart';
 
 /// 최근 편집한 음원 목록(받은 것 + 자른 결과 + 연 파일). 앱을 껐다 켜도 유지된다.
 class RecentStore extends ChangeNotifier {
-  static const _key = 'recentAudio';
+  RecentStore({String key = 'recentAudio'}) : _key = key;
+
+  /// 영상 편집용은 'recentVideo' 로 따로 둔다.
+  final String _key;
   static const maxItems = 20;
 
   final List<SavedAudio> _items = [];
