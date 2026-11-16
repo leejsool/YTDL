@@ -174,10 +174,54 @@ class MainActivity : FlutterActivity() {
                         if (!out.exists() || out.length() == 0L) throw IOException("음량을 바꾼 파일이 비어 있습니다.")
                         out
                     } else file
+
+                    // 영상 구간: 통째로 받은 영상에서 고른 부분만 복사해 낸다(다시 인코딩 없음).
+                    val cutArgs = call.argument<List<String>>("cutArgs")
+                    val cutStart = call.argument<Number>("cutStart")?.toDouble()
+                    val cutLength = call.argument<Number>("cutLength")?.toDouble()
+                    if (!audio && cutArgs != null && cutStart != null && cutLength != null) {
+                        runOnUiThread { events?.success(mapOf("id" to id, "line" to "YTDL_CUT")) }
+                        val out = File(File(tmp, "cut").apply { mkdirs() }, finalFile.name)
+                        runFfmpeg(
+                            listOf(
+                                "-nostdin", "-y", "-loglevel", "error",
+                                "-ss", "%.3f".format(java.util.Locale.US, cutStart),
+                                "-i", finalFile.absolutePath,
+                                "-t", "%.3f".format(java.util.Locale.US, cutLength),
+                                "-map_metadata", "0",
+                            ) + cutArgs + out.absolutePath
+                        )
+                        if (!out.exists() || out.length() == 0L) throw IOException("잘라낸 영상이 비어 있습니다.")
+                        return@async publish(out, false)
+                    }
                     publish(finalFile, audio)
                 } finally {
                     tmp.deleteRecursively()
                     infoFile?.delete()
+                }
+            }
+
+            // 받아 둔 소리 스트림으로 음원 파일을 만든다(자르기·음량·변환을 한 번에). 인자는 Dart 쪽이 정한다.
+            "convertAudio" -> async(result) {
+                ensureInit()
+                val src = File(call.argument<String>("src")!!)
+                if (!src.exists()) throw IOException("받아 둔 소리를 찾을 수 없습니다.")
+                val outName = call.argument<String>("outName")!!
+                val inArgs = call.argument<List<String>>("inArgs") ?: emptyList()
+                val outArgs = call.argument<List<String>>("outArgs") ?: emptyList()
+                val tmp = File(getExternalFilesDir(null) ?: filesDir, "tmp/conv${System.nanoTime()}").apply {
+                    mkdirs()
+                }
+                try {
+                    val out = File(tmp, outName)
+                    runFfmpeg(
+                        listOf("-nostdin", "-y", "-loglevel", "error") + inArgs +
+                            listOf("-i", src.absolutePath) + outArgs + out.absolutePath
+                    )
+                    if (!out.exists() || out.length() == 0L) throw IOException("만든 파일이 비어 있습니다.")
+                    publish(out, true)
+                } finally {
+                    tmp.deleteRecursively()
                 }
             }
 

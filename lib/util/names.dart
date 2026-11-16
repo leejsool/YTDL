@@ -57,3 +57,37 @@ String extensionOf(String path) {
   final dot = file.lastIndexOf('.');
   return dot > 0 ? file.substring(dot + 1) : '';
 }
+
+const _fullWidth = {
+  '"': '＂',
+  '*': '＊',
+  ':': '：',
+  '<': '＜',
+  '>': '＞',
+  '?': '？',
+  '|': '｜',
+  '/': '⧸',
+  r'\': '⧹',
+};
+
+/// 영상 제목을 파일 이름으로 바꾼다. yt-dlp 의 `%(title).100s` + `--windows-filenames` 와 같은 결과가
+/// 나오게 해서(못 쓰는 글자는 비슷하게 생긴 전각 글자로), 어느 길로 받든 파일 이름이 같게 한다.
+String fileNameFromTitle(String title) {
+  var t = title.length > 100 ? title.substring(0, 100) : title;
+  t = t.replaceAll(RegExp(r'[\r\n\t]+'), ' ').replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '');
+  final b = StringBuffer();
+  for (final ch in t.split('')) {
+    b.write(_fullWidth[ch] ?? ch);
+  }
+  t = b.toString().trim().replaceAll(RegExp(r'[. ]+$'), '');
+  return t.isEmpty ? '_' : t;
+}
+
+/// 실행할 때마다 같은 값이 나오는 짧은 해시(파일 이름용). `String.hashCode` 는 그게 보장되지 않는다.
+String stableHash(String text) {
+  var h = 0x811c9dc5;
+  for (final c in text.codeUnits) {
+    h = ((h ^ c) * 0x01000193) & 0xffffffff;
+  }
+  return h.toRadixString(36);
+}

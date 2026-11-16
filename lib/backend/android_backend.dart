@@ -62,6 +62,7 @@ class AndroidBackend extends Backend {
   Future<void> prepare(SetupCallback onStatus) async {
     onStatus('다운로드 엔진을 준비하는 중…', null);
     await _method.invokeMethod('init');
+    cleanAudioCache();
     try {
       final prefs = await SharedPreferences.getInstance();
       _folder = cleanFolderName(prefs.getString('set_folder') ?? 'YTDL');
@@ -168,6 +169,9 @@ class AndroidBackend extends Backend {
     void Function(DownloadProgress) onProgress,
     CancelToken token,
   ) async {
+    // 음원은 받아 둔 소리 스트림으로 폰 안에서 바로 만든다(안 되면 아래 yt-dlp 로).
+    final local = await downloadAudioLocally(url, options, onProgress, token);
+    if (local != null) return local;
     // 조회 때 받아 둔 정보를 쓰는 빠른 길이 실패하면(링크 만료 등) 주소로 처음부터 한 번 더 시도한다.
     if (options.infoJson != null) {
       try {
@@ -206,6 +210,12 @@ class AndroidBackend extends Backend {
         'gainArgs': options.kind == MediaKind.audio
             ? gainEncodeArgs(options.gain, options.audioFormat)
             : null,
+        // 영상 구간: 전체를 받은 뒤 폰 안에서 복사로 자른다(구간만 받기보다 훨씬 빠르다).
+        if (options.cutsVideoLocally) ...{
+          'cutStart': options.trimStart!.toDouble(),
+          'cutLength': (options.trimEnd! - options.trimStart!).toDouble(),
+          'cutArgs': videoTrimArgs(reencode: false, outExt: 'mp4'),
+        },
       });
       return DownloadResult(
         location: r?['location'] ?? '',
@@ -243,6 +253,31 @@ class AndroidBackend extends Backend {
       );
     } on PlatformException catch (e) {
       throw Exception(e.message ?? '자르기에 실패했습니다.');
+    }
+  }
+
+  @override
+  Future<DownloadResult> convertAudio(
+    String srcPath,
+    String outBaseName,
+    String ext, {
+    List<String> inArgs = const [],
+    List<String> outArgs = const [],
+    CancelToken? token,
+  }) async {
+    try {
+      final r = await _method.invokeMapMethod<String, String>('convertAudio', {
+        'src': srcPath,
+        'outName': '$outBaseName.$ext',
+        'inArgs': inArgs,
+        'outArgs': outArgs,
+      });
+      return DownloadResult(
+        location: r?['location'] ?? '',
+        filePath: r?['path'],
+      );
+    } on PlatformException catch (e) {
+      throw Exception(e.message ?? '음원을 만들지 못했습니다.');
     }
   }
 

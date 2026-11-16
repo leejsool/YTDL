@@ -3,6 +3,9 @@ import 'dart:io';
 import 'dart:isolate';
 
 import '../models.dart';
+import '../util/names.dart';
+import '../util/oembed.dart';
+import 'gain_args.dart';
 import 'ytdlp_args.dart';
 import 'android_backend.dart';
 import 'desktop_backend.dart';
@@ -83,36 +86,92 @@ abstract class Backend {
     return id.hashCode.toUnsigned(32).toRadixString(36);
   }
 
-  /// 미리듣기용: 소리 전체를 한 번 받아 둔다(같은 영상은 다시 받지 않는다).
+  /// 받아 둔 소리를 두는 폴더. 조회하자마자 여기에 소리 전체를 받아 두고 미리듣기·음량 분석·저장에 같이 쓴다.
+  /// [audioCacheDays] 일이 지난 파일은 지운다. (Windows 는 앱 폴더 아래로 바꾼다.)
+  Directory get audioCacheDir => Directory(
+    '${Directory.systemTemp.path}${Platform.pathSeparator}ytdl_audio_cache',
+  );
+
+  /// 받아 둔 소리를 보관하는 날 수.
+  static const audioCacheDays = 3;
+
+  bool _cacheCleaned = false;
+
+  /// 오래된 받아 둔 소리를 지운다(앱을 켠 뒤 처음 한 번). 받다 만 조각(.part)은 한 시간 지나면 지운다.
+  void cleanAudioCache({bool force = false}) {
+    if (_cacheCleaned && !force) return;
+    _cacheCleaned = true;
+    try {
+      final dir = audioCacheDir;
+      if (!dir.existsSync()) return;
+      final now = DateTime.now();
+      for (final e in dir.listSync()) {
+        try {
+          final age = now.difference(e.statSync().modified);
+          final limit = e.path.endsWith('.part')
+              ? const Duration(hours: 1)
+              : const Duration(days: audioCacheDays);
+          if (age > limit) e.deleteSync(recursive: true);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  static String _streamTag(String? audioUrl) {
+    if (audioUrl == null) return '';
+    try {
+      return Uri.parse(audioUrl).queryParameters['itag'] ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 소리 전체를 한 번 받아 둔다(같은 영상·같은 스트림은 다시 받지 않고, 앱을 다시 켜도 남아 있다).
   ///
   /// [audioUrl] (영상 조회 때 알아 둔 소리 스트림 주소)이 있으면 그걸 10MB 씩 나눠서 직접 받는다.
   /// 유튜브는 한 줄로 길게 읽는 연결(ffmpeg 등)은 속도를 실시간으로 묶지만, 구간(Range)으로 나눠 받으면
   /// 제한이 없어서 15분짜리가 1초 남짓에 받아진다. 이 방법은 yt-dlp 를 다시 돌리지 않아 영상 분석 시간(3~5초)도 아낀다.
   /// 주소가 만료됐거나 막혀 있으면 yt-dlp 로 받는다.
-  Future<String> previewFull(String url, {String? audioUrl}) {
-    return _fullAudio[url] ??= _fetchFull(url, audioUrl).catchError((Object e) {
-      _fullAudio.remove(url);
-      throw e;
-    });
+  ///
+  /// [exact] 가 false 면(미리듣기·음량 분석) 이 영상의 소리가 어떤 스트림으로든 이미 있으면 그걸 쓴다.
+  /// true 면(저장) 꼭 [audioUrl] 의 스트림을 받는다.
+  Future<String> previewFull(String url, {String? audioUrl, bool exact = false}) async {
+    if (!exact) {
+      final any = await cachedFullAudio(url);
+      if (any != null) return any;
+    }
+    final key = '$url|${_streamTag(audioUrl)}';
+    for (var attempt = 0; ; attempt++) {
+      final pending = _fullAudio[key] ??= _fetchFull(url, audioUrl);
+      try {
+        final path = await pending;
+        // 받아 둔 뒤 파일이 지워졌으면(임시 폴더 정리 등) 한 번 다시 받는다.
+        if (attempt > 0 || File(path).existsSync()) return path;
+      } catch (_) {
+        if (identical(_fullAudio[key], pending)) _fullAudio.remove(key);
+        rethrow;
+      }
+      if (identical(_fullAudio[key], pending)) _fullAudio.remove(key);
+    }
   }
 
-  /// 미리듣기용으로 이미 받아 둔(또는 받는 중인) 전체 소리 파일. 없거나 받기에 실패했으면 null.
-  /// 자동 음량 분석이 같은 소리를 yt-dlp 로 다시 받지 않고 이 파일을 쓰게 하려고 둔다.
+  /// 이 영상의 소리로 이미 받아 둔(또는 받는 중인) 파일. 없거나 받기에 실패했으면 null.
+  /// 미리듣기와 자동 음량 분석이 같은 소리를 다시 받지 않게 하려고 둔다.
   Future<String?> cachedFullAudio(String url) async {
-    final pending = _fullAudio[url];
-    if (pending == null) return null;
-    try {
-      final path = await pending;
-      return File(path).existsSync() ? path : null;
-    } catch (_) {
-      return null;
+    final prefix = '$url|';
+    for (final key in _fullAudio.keys.where((k) => k.startsWith(prefix)).toList()) {
+      try {
+        final path = await _fullAudio[key];
+        if (path != null && File(path).existsSync()) return path;
+      } catch (_) {}
     }
+    return null;
   }
 
   Future<String> _fetchFull(String url, String? audioUrl) async {
     if (audioUrl != null) {
       try {
-        return await _downloadChunked(audioUrl);
+        return await _downloadChunked(url, audioUrl);
       } catch (_) {
         // 아래 yt-dlp 로 다시 시도한다.
       }
@@ -120,21 +179,25 @@ abstract class Backend {
     return previewDownload(url, buildPreviewFullArgs());
   }
 
-  Future<String> _downloadChunked(String url) async {
+  Future<String> _downloadChunked(String pageUrl, String url) async {
     const chunk = 10 * 1024 * 1024;
     final uri = Uri.parse(url);
     final mime = uri.queryParameters['mime'] ?? '';
     final ext = mime.contains('webm') ? 'webm' : (mime.contains('mp4') ? 'm4a' : 'audio');
-    final dir = await Directory('${Directory.systemTemp.path}${Platform.pathSeparator}ytdl_preview_full')
-        .create(recursive: true);
-    // 오래된 받은 파일 정리(1시간 지난 것)
-    for (final e in dir.listSync()) {
+    final dir = await audioCacheDir.create(recursive: true);
+    cleanAudioCache();
+    final name = '${youtubeVideoId(pageUrl) ?? stableHash(pageUrl)}_${_streamTag(url)}.$ext';
+    final file = File('${dir.path}${Platform.pathSeparator}$name');
+    // 전에 받아 둔 게 있으면 그대로 쓴다(보관 기간이 다시 시작되게 시각만 고친다).
+    if (file.existsSync() && file.lengthSync() > 0) {
       try {
-        if (DateTime.now().difference(e.statSync().modified).inMinutes > 60) e.deleteSync();
+        file.setLastModifiedSync(DateTime.now());
       } catch (_) {}
+      return file.path;
     }
-    final file = File('${dir.path}${Platform.pathSeparator}full_${DateTime.now().microsecondsSinceEpoch}.$ext');
-    final sink = file.openWrite();
+    // 다 받은 뒤에 제 이름으로 바꿔서, 받다가 끊긴 반쪽짜리를 쓰는 일이 없게 한다.
+    final part = File('${file.path}.${DateTime.now().microsecondsSinceEpoch}.part');
+    final sink = part.openWrite();
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
     try {
       var pos = 0;
@@ -161,15 +224,89 @@ abstract class Backend {
       }
       await sink.close();
       if (pos == 0) throw const HttpException('빈 응답');
-      return file.path;
+      if (total != null && total > 0 && pos < total) throw const HttpException('받다가 끊겼습니다');
+      if (file.existsSync()) file.deleteSync();
+      return (await part.rename(file.path)).path;
     } catch (_) {
       try {
         await sink.close();
       } catch (_) {}
-      if (file.existsSync()) file.deleteSync();
+      if (part.existsSync()) part.deleteSync();
       rethrow;
     } finally {
       client.close(force: true);
+    }
+  }
+
+  // ---------------------------------------------------------------- 음원을 기기 안에서 만들기
+  /// 받아 둔 소리 [srcPath] 로 [outBaseName].[ext] 를 만들어 저장 위치에 둔다.
+  /// [inArgs] 는 ffmpeg 입력 앞(-ss/-t), [outArgs] 는 출력 쪽(코덱·필터·태그) 인자.
+  Future<DownloadResult> convertAudio(
+    String srcPath,
+    String outBaseName,
+    String ext, {
+    List<String> inArgs = const [],
+    List<String> outArgs = const [],
+    CancelToken? token,
+  }) => throw UnimplementedError();
+
+  /// 음원을 yt-dlp 없이 만든다: 조회 때 알아 둔 소리 스트림을 받아 두고(대개 조회 직후 이미 받아 놓았다)
+  /// 기기 안에서 자르기·음량 조절·변환을 한 번에 한다.
+  /// 구간만 받기는 유튜브가 실시간 속도로 묶어서 4분 구간에 2분이 걸리지만, 이 방법은 몇 초면 끝난다.
+  /// 조건이 안 맞거나 실패하면 null 을 돌려주고, 그러면 부르는 쪽이 예전처럼 yt-dlp 로 받는다.
+  Future<DownloadResult?> downloadAudioLocally(
+    String url,
+    DownloadOptions o,
+    void Function(DownloadProgress) onProgress,
+    CancelToken token,
+  ) async {
+    final info = o.info;
+    if (o.kind != MediaKind.audio || info == null) return null;
+    final audioUrl = info.audioUrlFor(o.audioFormat);
+    if (audioUrl == null) return null;
+    try {
+      onProgress(const DownloadProgress(stage: '음원 받는 중…'));
+      final src = await previewFull(url, audioUrl: audioUrl, exact: true);
+      if (token.cancelled) throw CancelledException();
+      onProgress(
+        DownloadProgress(stage: o.gain.isActive ? '음량 조절 중…' : '변환 중…'),
+      );
+      final name =
+          '${fileNameFromTitle(info.title)}${o.gain.nameTag}'
+          '${o.hasTrim ? cutSuffix(o.trimStart!, o.trimEnd!) : ''}';
+      final r = await convertAudio(
+        src,
+        name,
+        o.audioFormat,
+        inArgs: [
+          if (o.hasTrim) ...[
+            '-ss',
+            o.trimStart!.toStringAsFixed(3),
+            '-t',
+            (o.trimEnd! - o.trimStart!).toStringAsFixed(3),
+          ],
+        ],
+        outArgs: localAudioArgs(
+          srcExt: extensionOf(src),
+          format: o.audioFormat,
+          gain: o.gain,
+          metadata: {
+            'title': info.title,
+            'artist': info.uploader,
+            'date': info.uploadDate ?? '',
+            'purl': info.url,
+          },
+        ),
+        token: token,
+      );
+      if (token.cancelled) throw CancelledException();
+      onProgress(const DownloadProgress(percent: 1, stage: '저장 중…'));
+      return r;
+    } on CancelledException {
+      rethrow;
+    } catch (_) {
+      if (token.cancelled) throw CancelledException();
+      return null;
     }
   }
 

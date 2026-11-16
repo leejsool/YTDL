@@ -11,6 +11,9 @@ const String fileMarker = 'YTDL_FILE:';
 /// Android 쪽이 "받은 뒤 음량 조절 시작"을 알릴 때 보내는 줄.
 const String gainMarker = 'YTDL_GAIN';
 
+/// Android 쪽이 "받은 영상에서 구간 자르기 시작"을 알릴 때 보내는 줄.
+const String cutMarker = 'YTDL_CUT';
+
 List<String> buildAudioProbeArgs({double? startSec, double? endSec}) => [
   '--no-playlist',
   '--no-progress',
@@ -83,7 +86,13 @@ List<String> buildDownloadArgs(DownloadOptions o) {
   if (o.kind == MediaKind.audio) {
     args.addAll([
       '-f',
-      'bestaudio/best',
+      // 목표 형식과 같은 코덱의 스트림이 있으면 그걸 받는다. 그러면 변환이 "담기만"으로 끝나
+      // 다시 인코딩하는 시간(10분 음원에 수십 초)과 음질 손실이 없다.
+      switch (o.audioFormat) {
+        'm4a' => 'bestaudio[ext=m4a]/bestaudio/best',
+        'opus' => 'bestaudio[acodec=opus]/bestaudio/best',
+        _ => 'bestaudio/best',
+      },
       '-x',
       '--audio-format',
       o.audioFormat,
@@ -100,7 +109,8 @@ List<String> buildDownloadArgs(DownloadOptions o) {
     args.addAll(['-f', 'bv*+ba/b', '-S', sort, '--merge-output-format', 'mp4']);
   }
 
-  if (o.hasTrim) {
+  // 영상 구간을 기기 안에서 자르기로 했으면 여기서는 전체를 받는다(이름에는 구간 표시가 그대로 붙는다).
+  if (o.hasTrim && !o.cutsVideoLocally) {
     args.addAll([
       '--download-sections',
       '*${o.trimStart}-${o.trimEnd}',
@@ -123,6 +133,9 @@ class ProgressParser {
     }
     if (line.startsWith(gainMarker)) {
       return const DownloadProgress(percent: 1, stage: '음량 조절 중…');
+    }
+    if (line.startsWith(cutMarker)) {
+      return const DownloadProgress(percent: 1, stage: '구간 자르는 중…');
     }
     final m = _pct.firstMatch(line);
     if (m != null) {

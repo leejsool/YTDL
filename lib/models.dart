@@ -57,6 +57,9 @@ class MediaInfo {
     this.formats = const [],
     this.storyboard,
     this.previewAudioUrl,
+    this.m4aAudioUrl,
+    this.opusAudioUrl,
+    this.uploadDate,
     this.rawJson,
     DateTime? fetchedAt,
   }) : fetchedAt = fetchedAt ?? DateTime.now();
@@ -75,6 +78,21 @@ class MediaInfo {
   /// 구간 미리듣기용 소리 전용 스트림 주소(없으면 미리듣기를 숨긴다). 몇 시간 뒤에는 만료된다.
   final String? previewAudioUrl;
 
+  /// 재인코딩 없이 그대로 m4a / opus 로 저장할 수 있는 소리 스트림 주소(없으면 null).
+  final String? m4aAudioUrl;
+  final String? opusAudioUrl;
+
+  /// 올린 날짜(YYYYMMDD). 저장하는 파일의 태그에 적는다.
+  final String? uploadDate;
+
+  /// [format] (mp3 | m4a | opus) 으로 저장할 때 받을 소리 스트림 주소.
+  /// 같은 코덱의 스트림이 있으면 그걸 골라 다시 인코딩하지 않게 하고, 없으면 가장 좋은 소리를 쓴다.
+  String? audioUrlFor(String format) => switch (format) {
+    'm4a' => m4aAudioUrl ?? previewAudioUrl,
+    'opus' => opusAudioUrl ?? previewAudioUrl,
+    _ => previewAudioUrl,
+  };
+
   /// yt-dlp 가 준 JSON 원문과 받은 시각. 다운로드할 때 yt-dlp 가 같은 분석을 처음부터 다시 하지 않도록
   /// 이걸 넘겨 준다(`--load-info-json`, 다운로드 한 번에 약 3초 절약).
   final String? rawJson;
@@ -84,10 +102,10 @@ class MediaInfo {
   static const _reuseWindow = Duration(hours: 2);
 
   /// 다운로드에 다시 쓸 수 있는 JSON. 없거나 오래됐으면 null(그러면 yt-dlp 가 새로 분석한다).
-  String? get reusableJson =>
-      rawJson != null && DateTime.now().difference(fetchedAt) < _reuseWindow
-      ? rawJson
-      : null;
+  String? get reusableJson => rawJson != null && isFresh ? rawJson : null;
+
+  /// 조회한 지 얼마 안 돼서 스트림 주소를 아직 쓸 수 있는지.
+  bool get isFresh => DateTime.now().difference(fetchedAt) < _reuseWindow;
 
   factory MediaInfo.fromJson(
     Map<String, dynamic> j,
@@ -100,6 +118,9 @@ class MediaInfo {
       rawJson: raw,
       storyboard: Storyboard.fromFormats(rawFormats, duration),
       previewAudioUrl: pickPreviewAudioUrl(rawFormats, j['requested_formats'] as List?),
+      m4aAudioUrl: pickAudioUrlByCodec(rawFormats, 'mp4a'),
+      opusAudioUrl: pickAudioUrlByCodec(rawFormats, 'opus'),
+      uploadDate: j['upload_date'] as String?,
       id: (j['id'] ?? '').toString(),
       title: (j['title'] ?? '(제목 없음)').toString(),
       uploader: (j['uploader'] ?? j['channel'] ?? '').toString(),
@@ -248,12 +269,27 @@ class DownloadOptions {
     this.trimEnd,
     this.gain = const AudioGain.none(),
     this.infoJson,
+    this.info,
   });
 
   final MediaKind kind;
 
   /// 조회 때 받아 둔 yt-dlp JSON. 있으면 분석을 건너뛰고 바로 받는다(실패하면 백엔드가 새로 분석해서 다시 시도).
   final String? infoJson;
+
+  /// 조회해 둔 영상 정보(아직 신선할 때만 넣는다). 있으면 음원은 소리 스트림을 직접 받아
+  /// 기기 안에서 자르고 변환하고, 영상 구간은 전체를 받아 기기 안에서 자른다.
+  final MediaInfo? info;
+
+  /// 영상 구간을 "전체를 받아서 기기 안에서 자르기"로 처리할지.
+  /// 구간만 받기(--download-sections)는 유튜브가 실시간 속도로 묶어서, 영상이 아주 길지 않으면
+  /// 전체를 받는 쪽이 훨씬 빠르다. 대신 다시 인코딩하지 않으므로 시작이 앞쪽 키프레임으로 조금 당겨질 수 있다.
+  bool get cutsVideoLocally {
+    final total = info?.durationSeconds ?? 0;
+    if (kind != MediaKind.video || !hasTrim || total <= 0) return false;
+    final length = trimEnd! - trimStart!;
+    return total <= 900 || total <= length * 8;
+  }
 
   /// 음원일 때만 쓴다(영상은 무시).
   final AudioGain gain;
@@ -279,7 +315,23 @@ class DownloadOptions {
     trimEnd: trimEnd,
     gain: gain,
     infoJson: json,
+    info: info,
   );
+
+  /// 같은 옵션에 조회해 둔 정보를 붙인 복사본. 오래된 정보(주소 만료)는 붙이지 않는다.
+  DownloadOptions withInfo(MediaInfo? i) {
+    final fresh = i != null && i.isFresh ? i : null;
+    return DownloadOptions(
+      kind: kind,
+      audioFormat: audioFormat,
+      maxHeight: maxHeight,
+      trimStart: trimStart,
+      trimEnd: trimEnd,
+      gain: gain,
+      infoJson: fresh?.rawJson,
+      info: fresh,
+    );
+  }
 }
 
 class DownloadProgress {

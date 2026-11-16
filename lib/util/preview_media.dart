@@ -166,3 +166,29 @@ String? pickPreviewAudioUrl(List<dynamic>? formats, [List<dynamic>? requestedFor
   });
   return candidates.first['url'].toString();
 }
+
+/// [codec] ('mp4a' 또는 'opus') 로 된 소리 전용 스트림 중 가장 좋은 것의 주소. 없으면 null.
+/// 그 형식으로 저장할 때 다시 인코딩하지 않고 그대로 담으려고 쓴다(빠르고 음질 손실이 없다).
+/// 원래 언어 소리를 먼저, 그 안에서는 비트레이트가 높은 쪽을 고른다(yt-dlp 의 bestaudio 와 같은 기준).
+String? pickAudioUrlByCodec(List<dynamic>? formats, String codec) {
+  if (formats == null) return null;
+  Map<String, dynamic>? best;
+  double lang(Map<String, dynamic> f) => (f['language_preference'] as num?)?.toDouble() ?? -1;
+  double rate(Map<String, dynamic> f) => ((f['abr'] ?? f['tbr']) as num?)?.toDouble() ?? 0;
+  for (final f in formats) {
+    if (f is! Map<String, dynamic> ||
+        f['protocol'] != 'https' ||
+        (f['url'] ?? '').toString().isEmpty ||
+        !(f['vcodec'] == null || f['vcodec'] == 'none') ||
+        !(f['acodec'] ?? '').toString().startsWith(codec) ||
+        (f['format_id'] ?? '').toString().contains('drc')) {
+      continue;
+    }
+    if (best == null ||
+        lang(f) > lang(best) ||
+        (lang(f) == lang(best) && rate(f) > rate(best))) {
+      best = f;
+    }
+  }
+  return best?['url'].toString();
+}

@@ -55,6 +55,20 @@ class DesktopBackend extends Backend {
 
   static const _env = {'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1'};
 
+  String get _cacheRoot {
+    final home = Platform.environment['USERPROFILE'] ?? 'C:\\';
+    final base =
+        Platform.environment['LOCALAPPDATA'] ?? '$home\\AppData\\Local';
+    return '$base\\YTDL\\cache';
+  }
+
+  /// 조회하자마자 받아 두는 소리는 `%LOCALAPPDATA%\YTDL\cache\audio` 에 둔다(며칠 지나면 지운다).
+  @override
+  Directory get audioCacheDir => Directory('$_cacheRoot\\audio');
+
+  /// 영상을 통째로 받아 자를 때 잠깐 쓰는 작업 폴더.
+  Directory get _workRoot => Directory('$_cacheRoot\\work');
+
   List<String> get _common => [
     '--ffmpeg-location',
     _binDir,
@@ -103,6 +117,8 @@ class DesktopBackend extends Backend {
         Platform.environment['LOCALAPPDATA'] ?? '$home\\AppData\\Local';
     _binDir = '$base\\YTDL\\bin';
     Directory(_binDir).createSync(recursive: true);
+    cleanAudioCache();
+    _cleanWork();
 
     if (!File(_ytdlpFast).existsSync()) {
       try {
@@ -147,6 +163,20 @@ class DesktopBackend extends Backend {
         }
       }();
     }
+  }
+
+  /// 앱이 중간에 꺼져서 남은 작업 폴더를 지운다(하루 지난 것).
+  void _cleanWork() {
+    try {
+      if (!_workRoot.existsSync()) return;
+      for (final e in _workRoot.listSync()) {
+        try {
+          if (DateTime.now().difference(e.statSync().modified).inHours >= 24) {
+            e.deleteSync(recursive: true);
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   /// 백그라운드 업데이트 확인이 돌고 있으면 그게 끝날 때까지 기다린다.
@@ -393,6 +423,32 @@ class DesktopBackend extends Backend {
   ) async {
     Directory(_saveDir).createSync(recursive: true);
 
+    // 음원은 받아 둔 소리 스트림으로 기기 안에서 바로 만든다(안 되면 아래 yt-dlp 로).
+    final local = await downloadAudioLocally(url, options, onProgress, token);
+    if (local != null) return local;
+
+    // 영상 구간을 기기 안에서 자를 때는 작업 폴더에 전체를 받은 뒤 잘라서 저장 폴더에 둔다.
+    final work = options.cutsVideoLocally
+        ? await (await _workRoot.create(recursive: true)).createTemp('dl_')
+        : null;
+    try {
+      return await _downloadWithYtdlp(url, options, onProgress, token, work);
+    } finally {
+      try {
+        if (work != null && work.existsSync()) work.deleteSync(recursive: true);
+      } catch (_) {}
+    }
+  }
+
+  Future<DownloadResult> _downloadWithYtdlp(
+    String url,
+    DownloadOptions options,
+    void Function(DownloadProgress) onProgress,
+    CancelToken token,
+    Directory? work,
+  ) async {
+    final dir = work?.path ?? _saveDir;
+
     // 조회 때 받아 둔 정보가 있으면 yt-dlp 가 분석을 다시 하지 않고 바로 받는다(약 3초 절약).
     // 링크가 만료됐거나 어떤 이유로든 실패하면 주소로 처음부터 다시 시도한다.
     _YtdlpRun? run;
@@ -408,6 +464,7 @@ class DesktopBackend extends Backend {
           options,
           onProgress,
           token,
+          dir,
         );
       } on FileSystemException {
         run = null; // 임시 파일을 못 만들면 그냥 주소로 받는다.
@@ -419,11 +476,17 @@ class DesktopBackend extends Backend {
       if (token.cancelled) throw CancelledException();
       if (run != null && run.code != 0) run = null;
     }
-    run ??= await _runDownload([url], options, onProgress, token);
+    run ??= await _runDownload([url], options, onProgress, token, dir);
 
     if (token.cancelled) throw CancelledException();
     if (run.code != 0) throw Exception(_summarize(run.errLines));
-    final path = run.path;
+    var path = run.path;
+
+    if (work != null) {
+      if (path == null) throw Exception('받은 영상을 찾지 못했습니다.');
+      onProgress(const DownloadProgress(percent: 1, stage: '구간 자르는 중…'));
+      path = await _cutVideo(path, options, token);
+    }
 
     // 음량 조절: 받은 파일을 같은 형식으로 다시 인코딩해서 바꿔치기한다.
     if (options.kind == MediaKind.audio &&
@@ -450,14 +513,15 @@ class DesktopBackend extends Backend {
     DownloadOptions options,
     void Function(DownloadProgress) onProgress,
     CancelToken token,
+    String dir,
   ) async {
-    final first = await _runDownloadOnce(target, options, onProgress, token);
+    final first = await _runDownloadOnce(target, options, onProgress, token, dir);
     // 구간 받기(--download-sections)에서 ffmpeg 가 10번에 한 번쯤 이상한 종료 코드로 죽는다
     // (같은 명령을 다시 하면 대부분 성공). 그런 경우만 한 번 더 시도한다.
     if (first.code != 0 &&
         !token.cancelled &&
         first.errLines.any((l) => l.contains('ffmpeg exited with code'))) {
-      return _runDownloadOnce(target, options, onProgress, token);
+      return _runDownloadOnce(target, options, onProgress, token, dir);
     }
     return first;
   }
@@ -467,13 +531,14 @@ class DesktopBackend extends Backend {
     DownloadOptions options,
     void Function(DownloadProgress) onProgress,
     CancelToken token,
+    String dir,
   ) async {
     await _engineReady();
     if (token.cancelled) throw CancelledException();
     final proc = await Process.start(_ytdlp, [
       ..._common,
       '-P',
-      _saveDir,
+      dir,
       ...buildDownloadArgs(options),
       ...target,
     ], environment: _env);
@@ -504,6 +569,70 @@ class DesktopBackend extends Backend {
       err,
     ]).timeout(const Duration(seconds: 5), onTimeout: () => const []);
     return _YtdlpRun(code, errLines, parser.filePath);
+  }
+
+  /// 통째로 받은 영상 [full] 에서 고른 구간만 복사해(다시 인코딩 없음) 저장 폴더에 같은 이름으로 둔다.
+  Future<String> _cutVideo(
+    String full,
+    DownloadOptions o,
+    CancelToken token,
+  ) async {
+    final ext = extensionOf(full);
+    final out = '$_saveDir\\${baseNameOf(full)}.$ext';
+    final tmp = '$_saveDir\\${baseNameOf(full)}.cutting.$ext';
+    try {
+      await _runGainProbe(_ffmpeg, [
+        '-nostdin', '-y', '-loglevel', 'error',
+        '-ss', o.trimStart!.toStringAsFixed(3),
+        '-i', full,
+        '-t', (o.trimEnd! - o.trimStart!).toStringAsFixed(3),
+        '-map_metadata', '0',
+        ...videoTrimArgs(reencode: false, outExt: ext),
+        tmp,
+      ], token);
+      if (!File(tmp).existsSync() || File(tmp).lengthSync() == 0) {
+        throw Exception('잘라낸 영상이 비어 있습니다.');
+      }
+      if (File(out).existsSync()) File(out).deleteSync();
+      File(tmp).renameSync(out);
+      return out;
+    } finally {
+      final f = File(tmp);
+      if (f.existsSync()) f.deleteSync();
+    }
+  }
+
+  @override
+  Future<DownloadResult> convertAudio(
+    String srcPath,
+    String outBaseName,
+    String ext, {
+    List<String> inArgs = const [],
+    List<String> outArgs = const [],
+    CancelToken? token,
+  }) async {
+    Directory(_saveDir).createSync(recursive: true);
+    final out = '$_saveDir\\$outBaseName.$ext';
+    // 다 만든 뒤에 제 이름으로 바꿔서, 도중에 실패해도 반쪽짜리 파일이 남지 않게 한다.
+    final tmp = '$_saveDir\\$outBaseName.converting.$ext';
+    try {
+      await _runGainProbe(_ffmpeg, [
+        '-nostdin', '-y', '-loglevel', 'error',
+        ...inArgs,
+        '-i', srcPath,
+        ...outArgs,
+        tmp,
+      ], token ?? CancelToken());
+      if (!File(tmp).existsSync() || File(tmp).lengthSync() == 0) {
+        throw Exception('만든 파일이 비어 있습니다.');
+      }
+      if (File(out).existsSync()) File(out).deleteSync();
+      File(tmp).renameSync(out);
+      return DownloadResult(location: out, filePath: out);
+    } finally {
+      final f = File(tmp);
+      if (f.existsSync()) f.deleteSync();
+    }
   }
 
   /// [path] 파일의 음량을 바꿔 같은 이름으로 다시 저장한다. 실패하면 원래 파일은 그대로 둔다.

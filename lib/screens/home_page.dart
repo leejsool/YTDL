@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -240,6 +241,7 @@ class _HomePageState extends State<HomePage> {
         _trimOn = false;
         _gain = const AudioGain.none();
       });
+      _prefetchAudio(cached.$1);
       return;
     }
     setState(() {
@@ -277,10 +279,7 @@ class _HomePageState extends State<HomePage> {
         _trimEnd = info.durationSeconds;
         _gain = const AudioGain.none();
       });
-      // 조회 중에 미리 펼쳐 둔 구간 자르기가 있으면 이제 소리를 미리 받아 둔다.
-      if (_trimOn && info.durationSeconds <= 1800) {
-        unawaited(_preview.prefetch(info.url, audioUrl: info.previewAudioUrl));
-      }
+      _prefetchAudio(info);
     } catch (e) {
       if (mounted && gen == _fetchGen) setState(() => _fetchError = _msg(e));
     } finally {
@@ -291,6 +290,17 @@ class _HomePageState extends State<HomePage> {
         });
       }
     }
+  }
+
+  /// 조회가 끝나자마자 소리 전체를 받아 둔다(10분에 10~30MB, 보통 1~2초).
+  /// 미리듣기·자동 음량 분석·음원 저장이 모두 이 파일을 써서, 버튼을 누른 뒤 기다리는 시간이 거의 없어진다.
+  /// 아주 긴 영상(폰은 30분, PC 는 2시간 넘는 것)은 용량이 커서 필요해질 때 받는다.
+  void _prefetchAudio(MediaInfo info) {
+    final limit = Platform.isAndroid ? 1800 : 7200;
+    if (info.durationSeconds <= 0 || info.durationSeconds > limit) return;
+    unawaited(
+      _preview.prefetch(info.url, audioUrl: info.audioUrlFor(_audioFormat)),
+    );
   }
 
   /// 재생목록의 영상 목록을 읽어 고르는 화면을 띄운다.
@@ -397,8 +407,7 @@ class _HomePageState extends State<HomePage> {
         trimStart: trim ? _trimStart : null,
         trimEnd: trim ? _trimEnd : null,
         gain: _kind == MediaKind.audio ? _gain : const AudioGain.none(),
-        infoJson: info.reusableJson,
-      );
+      ).withInfo(info);
       final r = await _b.download(info.url, options, (p) {
         if (mounted) setState(() => _progress = p);
       }, token);
@@ -1019,7 +1028,7 @@ class _HomePageState extends State<HomePage> {
                 // 구간 자르기를 펼치면 미리듣기에 쓸 소리를 미리 받아 둔다(너무 긴 영상은 제외).
                 if (open && info.durationSeconds <= 1800) {
                   unawaited(
-                    _preview.prefetch(info.url, audioUrl: info.previewAudioUrl),
+                    _preview.prefetch(info.url, audioUrl: info.audioUrlFor(_audioFormat)),
                   );
                 }
               },
@@ -1090,7 +1099,7 @@ class _HomePageState extends State<HomePage> {
                             s,
                             e,
                             _gain,
-                            audioUrl: info.previewAudioUrl,
+                            audioUrl: info.audioUrlFor(_audioFormat),
                           ),
                           enabled: !busy,
                         ),
@@ -1132,7 +1141,7 @@ class _HomePageState extends State<HomePage> {
                           s1,
                           e1,
                           _gain,
-                          audioUrl: info.previewAudioUrl,
+                          audioUrl: info.audioUrlFor(_audioFormat),
                         );
                       },
                       analysisSource: (
@@ -1146,7 +1155,7 @@ class _HomePageState extends State<HomePage> {
                         if (info.durationSeconds <= 1800) {
                           await _preview.prefetch(
                             info.url,
-                            audioUrl: info.previewAudioUrl,
+                            audioUrl: info.audioUrlFor(_audioFormat),
                           );
                         }
                         return _b.measureGain(

@@ -190,7 +190,7 @@ class DownloadQueue extends ChangeNotifier {
     _changed();
     try {
       // 조회해 둔 정보가 아직 신선하면 yt-dlp 가 분석을 다시 하지 않는다.
-      final options = item.options.withInfoJson(item.info?.reusableJson);
+      final options = item.options.withInfo(item.info);
       var lastPercent = -1.0;
       final r = await backend.download(item.url, options, (p) {
         if (token.cancelled) return;
