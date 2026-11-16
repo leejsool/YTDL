@@ -1,8 +1,21 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// 릴리스 서명 정보는 저장소 밖(C:\myapp\key)에 둔다. 환경변수 YTDL_KEYSTORE_PROPS 로 다른 경로를 줄 수 있다.
+// 파일이 없으면(다른 PC 등) 디버그 키로 서명되어 빌드는 되지만 배포용은 아니다.
+val keystorePropsFile = File(System.getenv("YTDL_KEYSTORE_PROPS") ?: "C:/myapp/key/keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+// storeFile 은 properties 파일과 같은 폴더에서 파일 이름만으로 찾는다.
+val releaseKeystore = keystoreProps.getProperty("storeFile")
+    ?.let { File(keystorePropsFile.parentFile, File(it).name) }
+    ?.takeIf { it.exists() }
 
 android {
     namespace = "com.ytdl.ytdl"
@@ -39,11 +52,20 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 }
