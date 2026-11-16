@@ -120,3 +120,7 @@ dart run tool/engine_check.dart C:\myapp\tools\ytdlp C:\myapp\tmp\engine_out "ht
 ## 라이선스
 
 GPL-3.0 ([LICENSE](LICENSE)). Android 판이 내장하는 youtubedl-android 가 GPL-3.0 이라 같은 라이선스를 쓴다.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). 자세한 내용은 [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
