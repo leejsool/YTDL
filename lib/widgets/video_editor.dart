@@ -10,7 +10,7 @@ import '../util/names.dart';
 import '../util/time_format.dart';
 import 'range_transport_bar.dart';
 import 'trim_selector.dart';
-import 'rocker_switch.dart';
+import 'video_save_mode_choice.dart';
 
 /// 영상 파일을 보면서 들어 보고, 구간을 골라 새 영상 파일로 저장하는 카드.
 /// (음원 편집기와 같은 흐름. 저장 결과는 [onSaved] 로 부모에게 알려 새 편집 대상이 된다.)
@@ -336,20 +336,9 @@ class _VideoEditorState extends State<VideoEditor> {
               const SizedBox(height: 14),
               Text('저장 방식', style: theme.textTheme.titleSmall),
               const SizedBox(height: 6),
-              RockerSwitch<bool>(
-                left: const RockerOption(
-                  value: false,
-                  label: '빠르게',
-                  icon: Icons.bolt,
-                ),
-                right: const RockerOption(
-                  value: true,
-                  label: '정확하게',
-                  icon: Icons.gps_fixed,
-                ),
-                value: _reencode,
-                enabled: !_saving,
-                onChanged: (v) => setState(() => _reencode = v),
+              VideoSaveModeChoice(
+                reencode: _reencode,
+                onChanged: _saving ? null : (v) => setState(() => _reencode = v),
               ),
               const SizedBox(height: 6),
               Text(

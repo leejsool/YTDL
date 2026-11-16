@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../state/settings.dart';
 import '../util/time_format.dart';
+import 'edit_media_icon.dart';
 import 'pill_button.dart';
+import 'sliding_choice.dart';
 
 /// 재생목록에서 받을 영상을 고르고, 형식·화질을 정해 대기열에 담는 카드.
 class PlaylistPanel extends StatefulWidget {
@@ -128,7 +130,7 @@ class _PlaylistPanelState extends State<PlaylistPanel> {
                 ),
                 ButtonSegment(
                   value: MediaKind.video,
-                  icon: Icon(Icons.movie_outlined, size: 17),
+                  icon: EditMediaIcon.video(size: 17),
                   label: Text('영상'),
                 ),
               ],
@@ -136,25 +138,29 @@ class _PlaylistPanelState extends State<PlaylistPanel> {
               onSelectionChanged: (s) => setState(() => _kind = s.first),
             ),
             const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 4,
-              children: [
-                if (_kind == MediaKind.audio)
-                  for (final f in AppSettings.audioFormats)
-                    ChoiceChip(
-                      label: Text(f.toUpperCase()),
-                      selected: _audioFormat == f,
-                      onSelected: (_) => setState(() => _audioFormat = f),
-                    )
-                else
-                  for (final h in AppSettings.videoHeights)
-                    ChoiceChip(
-                      label: Text(h == null ? '최고' : '${h}p'),
-                      selected: _maxHeight == h,
-                      onSelected: (_) => setState(() => _maxHeight = h),
-                    ),
-              ],
+            Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: _kind == MediaKind.audio ? 282 : 392,
+                ),
+                child: _kind == MediaKind.audio
+                    ? SlidingChoice<String>(
+                        values: AppSettings.audioFormats,
+                        value: _audioFormat,
+                        labelBuilder: (format) => format.toUpperCase(),
+                        onChanged: (format) =>
+                            setState(() => _audioFormat = format),
+                      )
+                    : SlidingChoice<int?>(
+                        values: AppSettings.videoHeights,
+                        value: _maxHeight,
+                        labelBuilder: (height) =>
+                            height == null ? '최고' : '${height}p',
+                        onChanged: (height) =>
+                            setState(() => _maxHeight = height),
+                      ),
+              ),
             ),
             const SizedBox(height: 6),
             Row(

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../backend/backend.dart';
 import '../state/app_state.dart';
 import '../state/download_queue.dart';
+import '../widgets/edit_media_icon.dart';
 import 'edit_page.dart';
 import '../state/settings.dart';
 import 'home_page.dart';
@@ -142,9 +143,12 @@ class _AppShellState extends State<AppShell> {
         icon: _QueueIcon(queue: _queue),
         label: '대기열',
       ),
-      const NavigationDestination(icon: Icon(Icons.content_cut), label: '음원 편집'),
       const NavigationDestination(
-        icon: Icon(Icons.movie_creation_outlined),
+        icon: EditMediaIcon.audio(),
+        label: '음원 편집',
+      ),
+      const NavigationDestination(
+        icon: EditMediaIcon.video(),
         label: '영상 편집',
       ),
       const NavigationDestination(

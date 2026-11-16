@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../backend/backend.dart';
 import '../state/settings.dart';
+import '../widgets/edit_media_icon.dart';
 import '../widgets/pill_button.dart';
-import '../widgets/rocker_switch.dart';
+import '../widgets/sliding_choice.dart';
+import '../widgets/video_save_mode_choice.dart';
 
 /// 옵션 탭: 저장 폴더, 기본 음원 형식, 기본 영상 화질, 자동 음량 수준.
 class OptionsPage extends StatefulWidget {
@@ -88,63 +90,51 @@ class _OptionsPageState extends State<OptionsPage> {
                 const SizedBox(height: 18),
                 _section(
                   theme,
-                  icon: Icons.folder_outlined,
+                  icon: const Icon(Icons.folder_outlined),
                   title: '저장 폴더',
                   child: _folderBody(theme),
                 ),
                 _section(
                   theme,
-                  icon: Icons.headphones,
+                  icon: const Icon(Icons.headphones),
                   title: '기본 음원 형식',
                   hint: '다운로드 탭에서 음원을 받을 때 처음 선택되어 있는 형식이에요.',
-                  child: SegmentedButton<String>(
-                    showSelectedIcon: false,
-                    segments: [
-                      for (final f in AppSettings.audioFormats)
-                        ButtonSegment(value: f, label: Text(f.toUpperCase())),
-                    ],
-                    selected: {settings.audioFormat},
-                    onSelectionChanged: (s) => settings.setAudioFormat(s.first),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 282),
+                    child: SlidingChoice<String>(
+                      values: AppSettings.audioFormats,
+                      value: settings.audioFormat,
+                      labelBuilder: (format) => format.toUpperCase(),
+                      onChanged: settings.setAudioFormat,
+                    ),
                   ),
                 ),
                 _section(
                   theme,
-                  icon: Icons.movie_outlined,
+                  icon: const EditMediaIcon.video(),
                   title: '기본 영상 화질',
                   hint: '영상으로 받을 때 처음 선택되어 있는 화질이에요(그 화질이 없으면 가장 가까운 낮은 화질).',
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final h in AppSettings.videoHeights)
-                        ChoiceChip(
-                          label: Text(h == null ? '최고' : '${h}p'),
-                          selected: settings.maxHeight == h,
-                          onSelected: (_) => settings.setMaxHeight(h),
-                        ),
-                    ],
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 392),
+                    child: SlidingChoice<int?>(
+                      values: AppSettings.videoHeights,
+                      value: settings.maxHeight,
+                      labelBuilder: (height) =>
+                          height == null ? '최고' : '${height}p',
+                      onChanged: settings.setMaxHeight,
+                    ),
                   ),
                 ),
                 _section(
                   theme,
-                  icon: Icons.content_cut,
+                  icon: const Icon(Icons.content_cut),
                   title: '영상 자르기 기본 저장 방식',
                   hint: '영상 편집 탭에서 처음 선택되어 있는 방식이에요. 편집할 때마다 바꿀 수도 있어요.',
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      RockerSwitch<bool>(
-                        left: const RockerOption(
-                          value: false,
-                          label: '빠르게',
-                          icon: Icons.bolt,
-                        ),
-                        right: const RockerOption(
-                          value: true,
-                          label: '정확하게',
-                          icon: Icons.gps_fixed,
-                        ),
-                        value: settings.videoReencode,
+                      VideoSaveModeChoice(
+                        reencode: settings.videoReencode,
                         onChanged: settings.setVideoReencode,
                       ),
                       const SizedBox(height: 8),
@@ -161,7 +151,7 @@ class _OptionsPageState extends State<OptionsPage> {
                 ),
                 _section(
                   theme,
-                  icon: Icons.volume_up_outlined,
+                  icon: const Icon(Icons.volume_up_outlined),
                   title: '자동 음량 조절 수준',
                   hint: '음량 조절의 "자동" 버튼이 맞추는 목표 음량이에요. 클수록 소리가 커져요.',
                   child: _lufsBody(theme),
@@ -176,7 +166,7 @@ class _OptionsPageState extends State<OptionsPage> {
 
   Widget _section(
     ThemeData theme, {
-    required IconData icon,
+    required Widget icon,
     required String title,
     required Widget child,
     String? hint,
@@ -191,7 +181,10 @@ class _OptionsPageState extends State<OptionsPage> {
           children: [
             Row(
               children: [
-                Icon(icon, size: 19, color: colors.primary),
+                IconTheme.merge(
+                  data: IconThemeData(size: 19, color: colors.primary),
+                  child: icon,
+                ),
                 const SizedBox(width: 8),
                 Text(
                   title,

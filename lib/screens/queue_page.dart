@@ -6,6 +6,7 @@ import '../state/app_state.dart';
 import '../state/download_queue.dart';
 import '../util/names.dart';
 import '../util/time_format.dart';
+import '../widgets/edit_media_icon.dart';
 import '../widgets/pill_button.dart';
 
 /// 대기열 탭: 담아 둔 다운로드의 진행 상황을 보고, 취소·다시 시도하고, 끝난 파일을 열거나 편집한다.
@@ -221,7 +222,9 @@ class QueuePage extends StatelessWidget {
             tooltip: item.isVideo ? '영상 편집하기' : '음원 편집하기',
             onPressed: () => (item.isVideo ? videoController : audioController)
                 .open(item.saved!),
-            icon: Icon(item.isVideo ? Icons.movie_creation_outlined : Icons.content_cut),
+            icon: item.isVideo
+                ? const EditMediaIcon.video()
+                : const EditMediaIcon.audio(),
           ),
       ],
       if (item.status == QueueStatus.failed ||

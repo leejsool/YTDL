@@ -14,10 +14,12 @@ import '../state/settings.dart';
 import '../util/size_estimate.dart';
 import '../util/time_format.dart';
 import '../util/youtube_url.dart';
+import '../widgets/edit_media_icon.dart';
 import '../widgets/gain_selector.dart';
 import '../widgets/loading_stripes.dart';
 import '../widgets/playlist_panel.dart';
 import '../widgets/range_preview.dart';
+import '../widgets/sliding_choice.dart';
 import '../widgets/trim_selector.dart';
 import '../widgets/pill_button.dart';
 
@@ -914,10 +916,10 @@ class _HomePageState extends State<HomePage> {
     final canTrim = info.durationSeconds > 1;
     final trimmed = _trimOn && canTrim;
     final fraction = _selectedFraction(info);
-    String? size(int? bytes) => loading
+    String size(int? bytes) => loading
         ? '약 ??'
         : bytes == null
-        ? null
+        ? '—'
         : '약 ${formatBytes(bytes)}';
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
@@ -966,7 +968,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                   ButtonSegment(
                     value: MediaKind.video,
-                    icon: Icon(Icons.movie_outlined, size: 17),
+                    icon: EditMediaIcon.video(size: 17),
                     label: Text('영상'),
                   ),
                 ],
@@ -979,34 +981,31 @@ class _HomePageState extends State<HomePage> {
             const SizedBox(height: 12),
             if (_kind == MediaKind.audio)
               dim(
-                _formats<String>(
-                  values: const {'mp3': 'MP3', 'm4a': 'M4A', 'opus': 'OPUS'},
-                  sub: {
-                    for (final f in const ['mp3', 'm4a', 'opus'])
-                      f: size(estimateAudioBytes(info, f, fraction: fraction)),
-                  },
-                  selected: _audioFormat,
-                  onSelected: (v) => setState(() => _audioFormat = v),
-                  enabled: !busy,
+                SlidingChoice<String>(
+                  values: AppSettings.audioFormats,
+                  value: _audioFormat,
+                  labelBuilder: (format) => format.toUpperCase(),
+                  detailBuilder: (format) => size(
+                    estimateAudioBytes(info, format, fraction: fraction),
+                  ),
+                  onChanged: busy
+                      ? null
+                      : (format) => setState(() => _audioFormat = format),
                 ),
               )
             else
               dim(
-                _formats<int?>(
-                  values: const {
-                    null: '최고',
-                    1080: '1080p',
-                    720: '720p',
-                    480: '480p',
-                    360: '360p',
-                  },
-                  sub: {
-                    for (final h in const <int?>[null, 1080, 720, 480, 360])
-                      h: size(estimateVideoBytes(info, h, fraction: fraction)),
-                  },
-                  selected: _maxHeight,
-                  onSelected: (v) => setState(() => _maxHeight = v),
-                  enabled: !busy,
+                SlidingChoice<int?>(
+                  values: AppSettings.videoHeights,
+                  value: _maxHeight,
+                  labelBuilder: (height) =>
+                      height == null ? '최고' : '${height}p',
+                  detailBuilder: (height) => size(
+                    estimateVideoBytes(info, height, fraction: fraction),
+                  ),
+                  onChanged: busy
+                      ? null
+                      : (height) => setState(() => _maxHeight = height),
                 ),
               ),
             const SizedBox(height: 10),
@@ -1175,78 +1174,6 @@ class _HomePageState extends State<HomePage> {
       ? (_trimEnd - _trimStart) / info.durationSeconds
       : 1.0;
 
-  Widget _formats<T>({
-    required Map<T, String> values,
-    required T selected,
-    required void Function(T) onSelected,
-    required bool enabled,
-    Map<T, String?>? sub,
-  }) {
-    final theme = Theme.of(context);
-    final colors = theme.colorScheme;
-    return LayoutBuilder(
-      builder: (context, box) {
-        const spacing = 7.0;
-        final columns = box.maxWidth >= 195 ? 3 : 2;
-        final width = (box.maxWidth - spacing * (columns - 1)) / columns;
-        return Wrap(
-          spacing: spacing,
-          runSpacing: spacing,
-          children: [
-            for (final e in values.entries)
-              SizedBox(
-                width: width,
-                child: Semantics(
-                  button: true,
-                  selected: e.key == selected,
-                  child: Material(
-                    color: e.key == selected
-                        ? colors.secondaryContainer
-                        : colors.surface,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(9),
-                      side: BorderSide(
-                        color: e.key == selected
-                            ? colors.primary
-                            : colors.outlineVariant,
-                      ),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: enabled ? () => onSelected(e.key) : null,
-                      child: Padding(
-                        padding: const EdgeInsets.all(8),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              e.value,
-                              style: theme.textTheme.labelLarge?.copyWith(
-                                fontWeight: FontWeight.w800,
-                                color: e.key == selected
-                                    ? colors.primary
-                                    : colors.onSurface,
-                              ),
-                            ),
-                            Text(
-                              sub?[e.key] ?? '—',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.labelSmall,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        );
-      },
-    );
-  }
-
   Widget _buildActionArea() {
     final p = _progress;
     return Column(
@@ -1280,7 +1207,7 @@ class _HomePageState extends State<HomePage> {
             padding: const EdgeInsets.only(top: 8),
             child: PillButton(
               onPressed: () => widget.editController.open(_saved!),
-              icon: const Icon(Icons.content_cut),
+              icon: const EditMediaIcon.audio(),
               label: const Text('편집하기 (듣고 구간 자르기)'),
             ),
           ),
@@ -1289,7 +1216,7 @@ class _HomePageState extends State<HomePage> {
             padding: const EdgeInsets.only(top: 8),
             child: PillButton(
               onPressed: () => widget.videoController.open(_savedVideo!),
-              icon: const Icon(Icons.movie_creation_outlined),
+              icon: const EditMediaIcon.video(),
               label: const Text('영상 편집하기 (보면서 구간 자르기)'),
             ),
           ),
