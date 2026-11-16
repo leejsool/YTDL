@@ -147,22 +147,25 @@ class DesktopBackend extends Backend {
     }
 
     // 유튜브는 자주 바뀌므로 하루에 한 번 yt-dlp 를 최신으로 맞춘다.
+    // 화면도 첫 조회도 기다리지 않게, 조금 뒤 아무 작업이 없을 때 뒤에서 한다.
     final last = _prefs!.getInt('lastUpdateCheck') ?? 0;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - last > const Duration(days: 1).inMilliseconds) {
-      // 화면은 바로 열고 업데이트 확인은 뒤에서 한다. 그 사이 yt-dlp 를 쓰는 작업은 끝날 때까지 기다린다
-      // (실행 중인 yt-dlp 를 교체하면 안 되므로, [_engineReady]).
-      _updating = () async {
-        try {
-          await Process.run(_ytdlp, [
-            '-U',
-          ], environment: _env).timeout(const Duration(seconds: 60));
-          await _prefs!.setInt('lastUpdateCheck', now);
-        } catch (_) {
-          // 오프라인 등으로 실패해도 기존 엔진으로 계속 진행.
-        }
-      }();
+      scheduleEngineUpdate(() async {
+        await Process.run(_ytdlp, [
+          '-U',
+        ], environment: _env).timeout(const Duration(seconds: 60));
+        await _prefs!.setInt('lastUpdateCheck', now);
+      });
     }
+
+    // yt-dlp 는 컴퓨터를 켠 뒤 처음 실행할 때 유난히 느리다(파일 40MB 를 읽어 들이고 백신이 검사한다).
+    // 미리 한 번 헛돌려 두면 첫 조회가 그만큼 빨라진다.
+    unawaited(
+      withEngine(
+        () => Process.run(_ytdlp, ['--version'], environment: _env),
+      ).then<void>((_) {}, onError: (Object _) {}),
+    );
   }
 
   /// 앱이 중간에 꺼져서 남은 작업 폴더를 지운다(하루 지난 것).
@@ -178,10 +181,6 @@ class DesktopBackend extends Backend {
       }
     } catch (_) {}
   }
-
-  /// 백그라운드 업데이트 확인이 돌고 있으면 그게 끝날 때까지 기다린다.
-  Future<void> _updating = Future.value();
-  Future<void> _engineReady() => _updating;
 
   Future<void> _fetch(
     String url,
@@ -267,8 +266,10 @@ class DesktopBackend extends Backend {
 
   // ---------------------------------------------------------------- 정보
   @override
-  Future<MediaInfo> fetchInfo(String url) async {
-    await _engineReady();
+  Future<MediaInfo> fetchInfo(String url) =>
+      withEngine(() => _fetchInfo(url));
+
+  Future<MediaInfo> _fetchInfo(String url) async {
     final r = await Process.run(
       _ytdlp,
       [
@@ -295,8 +296,10 @@ class DesktopBackend extends Backend {
   }
 
   @override
-  Future<PlaylistInfo> fetchPlaylist(String url, {int limit = 200}) async {
-    await _engineReady();
+  Future<PlaylistInfo> fetchPlaylist(String url, {int limit = 200}) =>
+      withEngine(() => _fetchPlaylist(url, limit));
+
+  Future<PlaylistInfo> _fetchPlaylist(String url, int limit) async {
     final r = await Process.run(
       _ytdlp,
       [
@@ -377,8 +380,13 @@ class DesktopBackend extends Backend {
     String executable,
     List<String> args,
     CancelToken token,
+  ) => withEngine(() => _runProbe(executable, args, token));
+
+  Future<String> _runProbe(
+    String executable,
+    List<String> args,
+    CancelToken token,
   ) async {
-    await _engineReady();
     if (token.cancelled) throw CancelledException();
     final process = await Process.start(executable, args, environment: _env);
     void stop() {
@@ -532,8 +540,17 @@ class DesktopBackend extends Backend {
     void Function(DownloadProgress) onProgress,
     CancelToken token,
     String dir,
+  ) => withEngine(
+    () => _runYtdlpDownload(target, options, onProgress, token, dir),
+  );
+
+  Future<_YtdlpRun> _runYtdlpDownload(
+    List<String> target,
+    DownloadOptions options,
+    void Function(DownloadProgress) onProgress,
+    CancelToken token,
+    String dir,
   ) async {
-    await _engineReady();
     if (token.cancelled) throw CancelledException();
     final proc = await Process.start(_ytdlp, [
       ..._common,
@@ -830,8 +847,9 @@ class DesktopBackend extends Backend {
   }
 
   @override
-  Future<String> updateEngine() async {
-    await _engineReady();
+  Future<String> updateEngine() => withEngine(_updateEngine);
+
+  Future<String> _updateEngine() async {
     final r = await Process.run(
       _ytdlp,
       ['-U'],

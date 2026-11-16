@@ -84,9 +84,10 @@ class MainActivity : FlutterActivity() {
 
     private fun handle(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            // 엔진 준비만 한다. (버전 확인은 파이썬을 한 번 띄워야 해서 몇 초가 걸리는데 쓰는 곳이 없다.)
             "init" -> async(result) {
                 ensureInit()
-                YoutubeDL.version(applicationContext)
+                true
             }
 
             "getInfo" -> async(result) {

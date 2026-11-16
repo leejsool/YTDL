@@ -60,32 +60,34 @@ class AndroidBackend extends Backend {
 
   @override
   Future<void> prepare(SetupCallback onStatus) async {
-    onStatus('다운로드 엔진을 준비하는 중…', null);
-    await _method.invokeMethod('init');
+    // 화면을 바로 연다. 엔진(파이썬·yt-dlp) 준비는 뒤에서 미리 해 두고, 먼저 조회를 누르면 그때 마저 한다
+    // (네이티브 쪽 작업마다 준비 여부를 확인한다).
+    unawaited(
+      _method.invokeMethod('init').then<void>((_) {}, onError: (Object _) {}),
+    );
     cleanAudioCache();
     try {
       final prefs = await SharedPreferences.getInstance();
       _folder = cleanFolderName(prefs.getString('set_folder') ?? 'YTDL');
       await _method.invokeMethod<bool>('setFolder', {'name': _folder});
-    } catch (_) {}
-    // 유튜브가 자주 바뀌어서 내장 yt-dlp 가 낡으면 403 등으로 다운로드가 막힌다. 하루에 한 번 최신으로 맞춘다.
-    // (앱을 새로 설치하면 내장 버전으로 돌아가므로, 그때는 첫 실행에 바로 업데이트된다.)
-    try {
-      final prefs = await SharedPreferences.getInstance();
+      // 유튜브가 자주 바뀌어서 내장 yt-dlp 가 낡으면 403 등으로 다운로드가 막힌다. 하루에 한 번 최신으로 맞춘다.
+      // 화면도 첫 조회도 기다리지 않게, 조금 뒤 아무 작업이 없을 때 뒤에서 한다.
       final last = prefs.getInt('lastUpdateCheck') ?? 0;
       final now = DateTime.now().millisecondsSinceEpoch;
       if (now - last > const Duration(hours: 24).inMilliseconds) {
-        onStatus('다운로드 엔진을 최신으로 업데이트하는 중…', null);
-        await _method.invokeMethod<String>('update');
-        await prefs.setInt('lastUpdateCheck', now);
+        scheduleEngineUpdate(() async {
+          await _method.invokeMethod<String>('update');
+          await prefs.setInt('lastUpdateCheck', now);
+        });
       }
-    } catch (_) {
-      // 인터넷이 없거나 업데이트에 실패해도 기존 엔진으로 계속 쓴다.
-    }
+    } catch (_) {}
   }
 
   @override
-  Future<MediaInfo> fetchInfo(String url) async {
+  Future<MediaInfo> fetchInfo(String url) =>
+      withEngine(() => _fetchInfo(url));
+
+  Future<MediaInfo> _fetchInfo(String url) async {
     final json = await _method.invokeMethod<String>('getInfo', {'url': url});
     // yt-dlp가 경고 줄을 섞어 내보낼 수 있어 JSON 객체 줄만 골라낸다.
     final line = (json ?? '')
@@ -102,7 +104,10 @@ class AndroidBackend extends Backend {
   }
 
   @override
-  Future<PlaylistInfo> fetchPlaylist(String url, {int limit = 200}) async {
+  Future<PlaylistInfo> fetchPlaylist(String url, {int limit = 200}) =>
+      withEngine(() => _fetchPlaylist(url, limit));
+
+  Future<PlaylistInfo> _fetchPlaylist(String url, int limit) async {
     final json = await _method.invokeMethod<String>('getInfo', {
       'url': url,
       'playlist': true,
@@ -140,7 +145,7 @@ class AndroidBackend extends Backend {
       );
     };
     try {
-      final log = await _method.invokeMethod<String>('measureGain', {
+      final log = await withEngine(() => _method.invokeMethod<String>('measureGain', {
         'id': id,
         'source': source,
         'downloadArgs': remote
@@ -151,7 +156,7 @@ class AndroidBackend extends Backend {
           startSec: remote ? null : startSec,
           endSec: remote ? null : endSec,
         ),
-      });
+      }));
       if (token.cancelled) throw CancelledException();
       return gainFromMeasurement(log ?? '');
     } on PlatformException catch (e) {
@@ -191,7 +196,17 @@ class AndroidBackend extends Backend {
     void Function(DownloadProgress) onProgress,
     CancelToken token, {
     bool useInfo = true,
-  }) async {
+  }) => withEngine(
+    () => _ytdlpDownload(url, options, onProgress, token, useInfo),
+  );
+
+  Future<DownloadResult> _ytdlpDownload(
+    String url,
+    DownloadOptions options,
+    void Function(DownloadProgress) onProgress,
+    CancelToken token,
+    bool useInfo,
+  ) async {
     final id = 'dl${_seq++}';
     final parser = ProgressParser();
     _listeners[id] = (line) {
@@ -305,7 +320,10 @@ class AndroidBackend extends Backend {
   }
 
   @override
-  Future<String> previewDownload(String url, List<String> args) async {
+  Future<String> previewDownload(String url, List<String> args) =>
+      withEngine(() => _previewDownload(url, args));
+
+  Future<String> _previewDownload(String url, List<String> args) async {
     try {
       final path = await _method.invokeMethod<String>('previewSegment', {
         'id': 'pv${_seq++}',
@@ -347,7 +365,9 @@ class AndroidBackend extends Backend {
   }
 
   @override
-  Future<String> updateEngine() async {
+  Future<String> updateEngine() => withEngine(_updateEngine);
+
+  Future<String> _updateEngine() async {
     final r = await _method.invokeMethod<String>('update');
     return switch (r) {
       'DONE' => '최신 버전으로 업데이트했습니다',

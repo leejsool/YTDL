@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -24,6 +25,41 @@ abstract class Backend {
   Future<void> prepare(SetupCallback onStatus);
 
   Future<MediaInfo> fetchInfo(String url);
+
+  // ---------------------------------------------------------------- 엔진 업데이트와 작업이 겹치지 않게
+  int _engineBusy = 0;
+  Future<void> _engineHold = Future.value();
+
+  /// yt-dlp 를 쓰는 작업을 감싼다. 엔진 업데이트가 돌고 있으면 끝날 때까지 기다렸다가 시작하고
+  /// (실행 중인 yt-dlp 를 교체하면 안 된다), 작업 중이라는 것을 표시해 그동안 업데이트가 시작되지 않게 한다.
+  Future<T> withEngine<T>(Future<T> Function() op) async {
+    while (true) {
+      final hold = _engineHold;
+      await hold;
+      if (identical(hold, _engineHold)) break;
+    }
+    _engineBusy++;
+    try {
+      return await op();
+    } finally {
+      _engineBusy--;
+    }
+  }
+
+  /// 엔진 업데이트를 "앱을 켜고 조금 지난 뒤, 아무 작업도 없을 때" 뒤에서 돌린다.
+  /// 켜자마자 돌리면 그날 첫 조회가 업데이트가 끝날 때까지(수 초~수십 초) 기다리게 된다.
+  void scheduleEngineUpdate(
+    Future<void> Function() update, {
+    Duration delay = const Duration(seconds: 20),
+  }) {
+    unawaited(() async {
+      await Future<void>.delayed(delay);
+      while (_engineBusy > 0) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+      }
+      _engineHold = update().catchError((Object _) {});
+    }());
+  }
 
   /// 재생목록 주소의 영상 목록을 읽는다(영상마다 자세한 분석은 하지 않아 수 초 안에 끝난다).
   /// 너무 길면 앞의 [limit] 개만 읽는다.
