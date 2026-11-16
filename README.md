@@ -47,6 +47,7 @@
 .\build_android.ps1            # 디버그 APK -> build\app\outputs\flutter-apk\app-debug.apk
 .\build_android.ps1 -Release   # 릴리스 APK (ABI 별 분리)
 flutter build windows          # Visual Studio(C++ 데스크톱 워크로드) 설치 필요
+.\tool\build_installer.ps1     # Windows 설치 파일 -> build\installer\YTDL-<버전>-windows-setup.exe (Inno Setup 6 필요, installer\ytdl.iss)
 ```
 
 `build_android.ps1` 은 한글 사용자 폴더 때문에 생기는 Gradle/ninja 오류를 피하려고
@@ -115,3 +116,7 @@ dart run tool/engine_check.dart C:\myapp\tools\ytdlp C:\myapp\tmp\engine_out "ht
 
 - 유튜브가 바뀌어 다운로드가 실패하면 앱 상단의 업데이트 버튼(엔진 업데이트)을 누른다.
 - 본인이 권리를 가진 콘텐츠 또는 다운로드가 허용된 콘텐츠에만 사용할 것. 유튜브 약관은 허가 없는 다운로드를 금지한다.
+
+## 라이선스
+
+GPL-3.0 ([LICENSE](LICENSE)). Android 판이 내장하는 youtubedl-android 가 GPL-3.0 이라 같은 라이선스를 쓴다.
