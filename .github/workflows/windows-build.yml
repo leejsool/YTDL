@@ -1,0 +1,35 @@
+# Windows 설치 파일을 GitHub 서버에서 자동으로 빌드한다(검증 가능한 자동 빌드).
+# SignPath Foundation 의 무료 코드 서명은 "소스에서 CI 로 만든 파일"만 서명하므로 이 빌드가 서명의 출발점이다.
+# 실행: Actions 탭에서 수동 실행(workflow_dispatch) 또는 v* 태그를 푸시할 때.
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - run: flutter pub get
+      - run: flutter test
+
+      # flutter build windows + Inno Setup 컴파일(Inno Setup 은 러너에 미리 깔려 있다).
+      - name: Build installer
+        shell: pwsh
+        run: ./tool/build_installer.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: build/installer/*.exe
+          if-no-files-found: error
