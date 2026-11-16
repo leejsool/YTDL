@@ -399,6 +399,17 @@ abstract class Backend {
   /// 결과 파일이 있는 폴더를 연다(Windows만).
   Future<void> reveal(DownloadResult result) async {}
 
+  /// 앱 자체 업데이트(설치 파일을 받아 실행)를 지원하는지. 테스트용 가짜 백엔드는 false.
+  bool get canSelfUpdate => false;
+
+  /// Android: 이 기기의 주 ABI(`arm64-v8a` 등). 어떤 APK 를 받을지 고르는 데 쓴다.
+  Future<String?> deviceAbi() async => null;
+
+  /// 받은 설치 파일을 실행한다. 돌려주는 문구가 있으면 사용자에게 그대로 보여 준다.
+  /// Windows 는 설치 프로그램을 띄우고 이 앱을 끝낸다. Android 는 시스템 설치 화면을 연다.
+  Future<String?> installUpdate(String path) async =>
+      throw UnimplementedError();
+
   /// 다른 앱(유튜브 앱 등)에서 공유로 넘어온 텍스트(Android만).
   Future<String?> takeInitialSharedText() async => null;
   void Function(String text)? onSharedText;

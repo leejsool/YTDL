@@ -365,6 +365,20 @@ class AndroidBackend extends Backend {
   }
 
   @override
+  bool get canSelfUpdate => true;
+
+  @override
+  Future<String?> deviceAbi() => _method.invokeMethod<String>('deviceAbi');
+
+  @override
+  Future<String?> installUpdate(String path) async {
+    final r = await _method.invokeMethod<String>('installApk', {'path': path});
+    return r == 'permission'
+        ? '설정 화면에서 "이 출처 허용"을 켜고 돌아온 뒤, 업데이트 버튼을 한 번 더 눌러 주세요.'
+        : '설치 화면이 열렸어요. "설치"(또는 "업데이트")를 눌러 주세요.';
+  }
+
+  @override
   Future<String> updateEngine() => withEngine(_updateEngine);
 
   Future<String> _updateEngine() async {

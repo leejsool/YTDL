@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../backend/backend.dart';
 import '../state/settings.dart';
+import '../widgets/app_update_panel.dart';
 import '../widgets/edit_media_icon.dart';
 import '../widgets/pill_button.dart';
 import '../widgets/sliding_choice.dart';
@@ -155,6 +156,12 @@ class _OptionsPageState extends State<OptionsPage> {
                   title: '자동 음량 조절 수준',
                   hint: '음량 조절의 "자동" 버튼이 맞추는 목표 음량이에요. 클수록 소리가 커져요.',
                   child: _lufsBody(theme),
+                ),
+                _section(
+                  theme,
+                  icon: const Icon(Icons.info_outline),
+                  title: '앱 정보',
+                  child: AppUpdatePanel(backend: widget.backend),
                 ),
               ],
             ),

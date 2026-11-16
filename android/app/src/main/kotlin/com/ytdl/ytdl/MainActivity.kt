@@ -2,8 +2,12 @@ package com.ytdl.ytdl
 
 import android.content.ContentValues
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -353,6 +357,35 @@ class MainActivity : FlutterActivity() {
             "setFolder" -> {
                 folderName = call.argument<String>("name") ?: "YTDL"
                 result.success(true)
+            }
+
+            "deviceAbi" -> result.success(Build.SUPPORTED_ABIS.firstOrNull())
+
+            // 앱 업데이트: 받아 둔 APK 로 시스템 설치 화면을 연다. 서명이 같아야 덮어써진다.
+            "installApk" -> {
+                if (!packageManager.canRequestPackageInstalls()) {
+                    // 처음 한 번은 "이 앱에서 설치 허용"을 켜야 한다.
+                    startActivity(
+                        Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                    result.success("permission")
+                } else {
+                    var apk = File(call.argument<String>("path")!!)
+                    // FileProvider 는 캐시 폴더 안의 파일만 공유한다. 밖에 있으면 안으로 복사.
+                    if (!apk.canonicalPath.startsWith(cacheDir.canonicalPath)) {
+                        val copy = File(File(cacheDir, "update").apply { mkdirs() }, "update.apk")
+                        apk.copyTo(copy, overwrite = true)
+                        apk = copy
+                    }
+                    val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+                    startActivity(
+                        Intent(Intent.ACTION_VIEW)
+                            .setDataAndType(uri, "application/vnd.android.package-archive")
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                    result.success("ok")
+                }
             }
 
             "getSharedText" -> {

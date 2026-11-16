@@ -847,6 +847,22 @@ class DesktopBackend extends Backend {
   }
 
   @override
+  bool get canSelfUpdate => true;
+
+  @override
+  Future<String?> installUpdate(String path) async {
+    // 설치 프로그램(Inno Setup)은 실행 중인 이 앱을 닫고 덮어쓴 뒤 새 버전을 다시 띄운다(/relaunch=1).
+    await Process.start(path, [
+      '/SILENT',
+      '/NORESTART',
+      '/CLOSEAPPLICATIONS',
+      '/relaunch=1',
+    ], mode: ProcessStartMode.detached);
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    exit(0);
+  }
+
+  @override
   Future<String> updateEngine() => withEngine(_updateEngine);
 
   Future<String> _updateEngine() async {
